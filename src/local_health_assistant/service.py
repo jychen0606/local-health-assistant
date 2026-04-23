@@ -73,10 +73,13 @@ class HealthService:
         latest_weight = self.storage.latest_weight()
         recent_metrics = self.storage.list_recent_metrics(days=3)
         goals = self.storage.load_goals()
+        baseline_markers = self.storage.list_health_markers()
 
-        key_issue = self._determine_key_issue(foods, recent_hunger, recent_metrics)
-        recommended_adjustment = self._determine_adjustment(foods, recent_hunger, goals.model_dump(mode="json"))
-        realism_note = self._determine_realism_note(recent_hunger, recent_metrics)
+        key_issue = self._determine_key_issue(foods, recent_hunger, recent_metrics, baseline_markers)
+        recommended_adjustment = self._determine_adjustment(
+            foods, recent_hunger, goals.model_dump(mode="json"), baseline_markers
+        )
+        realism_note = self._determine_realism_note(recent_hunger, recent_metrics, baseline_markers)
 
         review_text = "\n".join(
             [
@@ -109,6 +112,7 @@ class HealthService:
                 food_logs=self.storage.list_food_logs_for_date(insight_date),
                 hunger_logs=self.storage.list_hunger_logs_for_date(insight_date),
                 latest_weight=self.storage.latest_weight(),
+                baseline_markers=self.storage.list_health_markers(),
             )
         )
         self.storage.save_daily_insights(
@@ -141,6 +145,8 @@ class HealthService:
         recent_metrics = self.storage.list_recent_metrics(days=3)
         latest_weight = self.storage.latest_weight()
         goals = self.storage.load_goals().model_dump(mode="json")
+        baseline_markers = self.storage.list_health_markers()
+        baseline_keys = {str(item.get("marker_key") or "") for item in baseline_markers}
 
         low_recovery = bool(recent_metrics and (recent_metrics[0].get("readiness_score") or 0) < 70)
         frequent_hunger = len(recent_hunger) >= 2
@@ -157,6 +163,14 @@ class HealthService:
         if latest_weight and goals.get("target_weight_range_kg", {}).get("max") is not None:
             if latest_weight["weight_kg"] > float(goals["target_weight_range_kg"]["max"]):
                 why += " 当前体重也在目标上沿之外，建议优先保住节奏。"
+        if "high_uric_acid" in baseline_keys:
+            why += " 你有高尿酸基线，后续饮食选择应避免默认走高嘌呤补偿路线。"
+        if "high_total_cholesterol" in baseline_keys:
+            why += " 你的基线血脂也提示需要更关注脂肪来源和长期饮食结构。"
+        if "sinus_bradycardia" in baseline_keys:
+            realistic_alternative = (
+                realistic_alternative + " 如果当天恢复一般，也不要把补偿方案和运动量一起拉太高。"
+            )
 
         advice_text = f"{conclusion}\n原因：{why}\n更现实的做法：{realistic_alternative}"
 
@@ -169,6 +183,7 @@ class HealthService:
                 "recent_hunger_count": len(recent_hunger),
                 "recent_oura_days": len(recent_metrics),
                 "latest_weight": latest_weight,
+                "baseline_marker_keys": sorted(baseline_keys),
             },
         )
         return AdviceResponse(
@@ -299,11 +314,17 @@ class HealthService:
         foods: list[dict[str, Any]],
         recent_hunger: list[dict[str, Any]],
         recent_metrics: list[dict[str, Any]],
+        baseline_markers: list[dict[str, Any]],
     ) -> str:
+        baseline_keys = {str(item.get("marker_key") or "") for item in baseline_markers}
         if recent_metrics and (recent_metrics[0].get("readiness_score") or 0) < 70:
             return "Recovery is trending low, so appetite control is likely harder than usual."
         if len(recent_hunger) >= 2:
             return "Frequent recent hunger signals suggest your current plan may be too aggressive."
+        if "high_uric_acid" in baseline_keys:
+            return "Your baseline uric acid is elevated, so food choices should optimize for adherence without drifting into high-purine compensation."
+        if "high_total_cholesterol" in baseline_keys:
+            return "Long-term food quality matters here because your baseline cholesterol is already elevated."
         if not foods:
             return "Yesterday has too little logged diet data, so consistency of tracking is the main gap."
         return "Nothing stands out as a crisis, but eating decisions still need tighter structure."
@@ -313,9 +334,15 @@ class HealthService:
         foods: list[dict[str, Any]],
         recent_hunger: list[dict[str, Any]],
         goals: dict[str, Any],
+        baseline_markers: list[dict[str, Any]],
     ) -> str:
+        baseline_keys = {str(item.get("marker_key") or "") for item in baseline_markers}
         if len(recent_hunger) >= 2:
             return "Front-load protein earlier in the day so evening decisions are less reactive."
+        if "high_uric_acid" in baseline_keys:
+            return "Keep meals stable and lower-purine by default instead of relying on rich reward meals later in the day."
+        if "high_total_cholesterol" in baseline_keys:
+            return "Today’s best adjustment is to reduce processed and high-saturated-fat choices rather than chase short-term restriction."
         if not foods:
             return "Log at least your first meal and any hunger spike today to restore a usable data trail."
         if goals.get("late_night_snack_limit", 0) <= 2:
@@ -326,11 +353,15 @@ class HealthService:
         self,
         recent_hunger: list[dict[str, Any]],
         recent_metrics: list[dict[str, Any]],
+        baseline_markers: list[dict[str, Any]],
     ) -> str:
+        baseline_keys = {str(item.get("marker_key") or "") for item in baseline_markers}
         if recent_metrics and (recent_metrics[0].get("readiness_score") or 0) < 70:
             return "A softer target is more realistic today because low recovery usually reduces restraint."
         if len(recent_hunger) >= 2:
             return "The plan should bias toward controlled flexibility, not a perfect day."
+        if "sinus_bradycardia" in baseline_keys:
+            return "A conservative pace is more realistic because your baseline favors recovery-aware, not aggressive, day plans."
         return "The recommendation is realistic if you make the decision before hunger gets strong."
 
     def _weight_context_line(self, latest_weight: dict[str, Any] | None) -> str:

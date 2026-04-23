@@ -14,6 +14,7 @@ class InsightInputs:
     food_logs: list[dict[str, Any]]
     hunger_logs: list[dict[str, Any]]
     latest_weight: dict[str, Any] | None
+    baseline_markers: list[dict[str, Any]]
 
 
 def generate_daily_insights(inputs: InsightInputs) -> DailyInsightsResponse:
@@ -24,6 +25,8 @@ def generate_daily_insights(inputs: InsightInputs) -> DailyInsightsResponse:
         score_tracking_gap(features),
         score_late_night_pattern(features),
         score_meal_structure_risk(features),
+        score_urate_constraint(features),
+        score_lipid_constraint(features),
     ]
     hypotheses = [item for item in hypotheses if item.score > 0]
     hypotheses.sort(key=lambda item: item.score, reverse=True)
@@ -52,6 +55,7 @@ def build_daily_features(inputs: InsightInputs) -> dict[str, Any]:
         "activity_score": metrics.get("activity_score"),
         "steps": metrics.get("steps"),
         "latest_weight_kg": inputs.latest_weight.get("weight_kg") if inputs.latest_weight else None,
+        "baseline_marker_keys": [str(item.get("marker_key") or "") for item in inputs.baseline_markers],
     }
 
 
@@ -142,6 +146,32 @@ def score_meal_structure_risk(features: dict[str, Any]) -> HypothesisScore:
         label="餐次结构风险",
         evidence=["hunger signals exist but no breakfast log was found"],
         recommendation="先观察早餐是否稳定和足量，尤其是蛋白来源，而不是直接归因到意志力。",
+    )
+
+
+def score_urate_constraint(features: dict[str, Any]) -> HypothesisScore:
+    marker_keys = set(features.get("baseline_marker_keys") or [])
+    if "high_uric_acid" not in marker_keys:
+        return _zero("urate_constraint", "高尿酸约束")
+    return HypothesisScore(
+        hypothesis_key="urate_constraint",
+        score=0.6,
+        label="高尿酸约束",
+        evidence=["baseline includes high_uric_acid"],
+        recommendation="饮食建议应避免默认推高嘌呤方案，尤其在外食、海鲜、内脏和酒精场景下更要保守。",
+    )
+
+
+def score_lipid_constraint(features: dict[str, Any]) -> HypothesisScore:
+    marker_keys = set(features.get("baseline_marker_keys") or [])
+    if "high_total_cholesterol" not in marker_keys:
+        return _zero("lipid_constraint", "血脂约束")
+    return HypothesisScore(
+        hypothesis_key="lipid_constraint",
+        score=0.55,
+        label="血脂约束",
+        evidence=["baseline includes high_total_cholesterol"],
+        recommendation="建议优先关注长期脂肪来源和加工食品负荷，而不是只盯体重波动。",
     )
 
 
