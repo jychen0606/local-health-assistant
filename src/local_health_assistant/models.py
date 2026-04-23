@@ -78,6 +78,17 @@ class OuraSyncRequest(BaseModel):
     trigger_type: Literal["manual", "scheduled"] = "manual"
 
 
+class OuraAuthStartResponse(BaseModel):
+    authorization_url: str
+    state: str
+
+
+class OuraCallbackResponse(BaseModel):
+    status: str
+    detail: str
+    scopes: list[str] = Field(default_factory=list)
+
+
 class InsightsGenerateRequest(BaseModel):
     target_date: date | None = None
 

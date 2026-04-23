@@ -148,6 +148,25 @@ SCHEMA_STATEMENTS = [
         created_at TEXT NOT NULL
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS oauth_states (
+        state TEXT PRIMARY KEY,
+        provider TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS oauth_tokens (
+        provider TEXT PRIMARY KEY,
+        access_token TEXT NOT NULL,
+        refresh_token TEXT,
+        token_type TEXT,
+        scope TEXT,
+        expires_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """,
 ]
 
 
@@ -556,6 +575,76 @@ class Storage:
                 for row in score_rows
             ],
         }
+
+    def save_oauth_state(self, provider: str, state: str) -> None:
+        self._insert_simple(
+            """
+            INSERT INTO oauth_states (state, provider, created_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(state) DO UPDATE SET
+                provider = excluded.provider,
+                created_at = excluded.created_at
+            """,
+            (state, provider, utc_now()),
+        )
+
+    def consume_oauth_state(self, provider: str, state: str) -> bool:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT state FROM oauth_states
+                WHERE state = ? AND provider = ?
+                """,
+                (state, provider),
+            ).fetchone()
+            if not row:
+                return False
+            conn.execute(
+                """
+                DELETE FROM oauth_states
+                WHERE state = ? AND provider = ?
+                """,
+                (state, provider),
+            )
+            conn.commit()
+        return True
+
+    def save_oauth_token(
+        self,
+        provider: str,
+        access_token: str,
+        refresh_token: str | None,
+        token_type: str | None,
+        scope: str | None,
+        expires_at: str | None,
+    ) -> None:
+        now = utc_now()
+        self._insert_simple(
+            """
+            INSERT INTO oauth_tokens (
+                provider, access_token, refresh_token, token_type, scope, expires_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(provider) DO UPDATE SET
+                access_token = excluded.access_token,
+                refresh_token = excluded.refresh_token,
+                token_type = excluded.token_type,
+                scope = excluded.scope,
+                expires_at = excluded.expires_at,
+                updated_at = excluded.updated_at
+            """,
+            (provider, access_token, refresh_token, token_type, scope, expires_at, now, now),
+        )
+
+    def get_oauth_token(self, provider: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM oauth_tokens
+                WHERE provider = ?
+                """,
+                (provider,),
+            ).fetchone()
+        return dict(row) if row else None
 
     def _has_goal_snapshots(self) -> bool:
         with self.connect() as conn:

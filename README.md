@@ -54,7 +54,23 @@ export LHA_DATA_DIR="/absolute/path/to/data/health"
 
 ## Oura setup
 
-Create a Personal Access Token from Oura and set one of these environment variables before starting the service:
+Oura's current developer flow is best treated as an OAuth application flow. Create an Oura application and set:
+
+```bash
+export OURA_CLIENT_ID="your-client-id"
+export OURA_CLIENT_SECRET="your-client-secret"
+export OURA_REDIRECT_URI="http://127.0.0.1:8000/auth/oura/callback"
+```
+
+Then start the service and open:
+
+```text
+http://127.0.0.1:8000/auth/oura/login
+```
+
+The response will contain an authorization URL. Open it in your browser, authorize the app, and Oura will redirect back to the callback endpoint so the tokens can be stored locally.
+
+The project still supports a direct bearer token if you happen to have one:
 
 ```bash
 export OURA_ACCESS_TOKEN="your-token"

@@ -10,17 +10,25 @@ from local_health_assistant.models import (
     DailyInsightsResponse,
     MessageIngestRequest,
     MessageIngestResponse,
+    OuraAuthStartResponse,
+    OuraCallbackResponse,
     ReviewResponse,
 )
-from local_health_assistant.oura import OuraClient, normalize_daily_metrics
+from local_health_assistant.oura import OuraClient, OuraOAuthClient, compute_expires_at, normalize_daily_metrics
 from local_health_assistant.parsing import parse_message
 from local_health_assistant.storage import Storage
 
 
 class HealthService:
-    def __init__(self, storage: Storage, oura_client: OuraClient | None = None):
+    def __init__(
+        self,
+        storage: Storage,
+        oura_client: OuraClient | None = None,
+        oura_oauth_client: OuraOAuthClient | None = None,
+    ):
         self.storage = storage
         self.oura_client = oura_client
+        self.oura_oauth_client = oura_oauth_client
 
     def ingest_message(self, request: MessageIngestRequest) -> MessageIngestResponse:
         occurred_at = request.occurred_at or datetime.now(timezone.utc)
@@ -156,15 +164,50 @@ class HealthService:
             advice_text=advice_text,
         )
 
+    def start_oura_oauth(self) -> OuraAuthStartResponse:
+        if self.oura_oauth_client is None:
+            raise RuntimeError("Oura OAuth is not configured.")
+        authorization_url, state = self.oura_oauth_client.build_authorization_url(
+            scopes=["daily", "personal"]
+        )
+        self.storage.save_oauth_state("oura", state)
+        return OuraAuthStartResponse(authorization_url=authorization_url, state=state)
+
+    def complete_oura_oauth(self, code: str, state: str) -> OuraCallbackResponse:
+        if self.oura_oauth_client is None:
+            raise RuntimeError("Oura OAuth is not configured.")
+        if not self.storage.consume_oauth_state("oura", state):
+            raise RuntimeError("Invalid or expired OAuth state.")
+        payload = self.oura_oauth_client.exchange_code(code)
+        access_token = str(payload.get("access_token") or "").strip()
+        if not access_token:
+            raise RuntimeError("Oura token exchange did not return access_token.")
+        scope_value = str(payload.get("scope") or "").strip()
+        scopes = [item for item in scope_value.split() if item]
+        self.storage.save_oauth_token(
+            provider="oura",
+            access_token=access_token,
+            refresh_token=str(payload.get("refresh_token") or "").strip() or None,
+            token_type=str(payload.get("token_type") or "").strip() or None,
+            scope=scope_value or None,
+            expires_at=compute_expires_at(payload.get("expires_in")),
+        )
+        return OuraCallbackResponse(
+            status="ok",
+            detail="Oura OAuth connection stored locally.",
+            scopes=scopes,
+        )
+
     def sync_oura(self, target_date: date, trigger_type: str) -> dict[str, Any]:
         run_id = self.storage.start_oura_sync(target_date, trigger_type)
-        if self.oura_client is None:
+        effective_client = self._oura_client_with_stored_token()
+        if effective_client is None:
             message = "Oura client is not configured."
             self.storage.finish_oura_sync(run_id, status="failed", error_message=message)
             return {"run_id": run_id, "target_date": target_date.isoformat(), "status": "failed", "message": message}
 
         try:
-            snapshot = self.oura_client.fetch_daily_snapshot(target_date)
+            snapshot = effective_client.fetch_daily_snapshot(target_date)
             snapshot_path = self.storage.save_oura_snapshot(target_date, snapshot)
             metrics = normalize_daily_metrics(snapshot, target_date, str(snapshot_path))
             self.storage.upsert_oura_daily_metrics(metrics)
@@ -180,6 +223,12 @@ class HealthService:
             "status": "success",
             "metrics": metrics,
         }
+
+    def _oura_client_with_stored_token(self) -> OuraClient | None:
+        token_row = self.storage.get_oauth_token("oura")
+        if token_row and token_row.get("access_token"):
+            return OuraClient(str(token_row["access_token"]), self.oura_client.base_url if self.oura_client else "https://api.ouraring.com")
+        return self.oura_client
 
     def _determine_key_issue(
         self,

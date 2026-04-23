@@ -36,6 +36,11 @@ class Settings:
     app_env: str
     oura_access_token: str | None
     oura_api_base_url: str
+    oura_client_id: str | None
+    oura_client_secret: str | None
+    oura_redirect_uri: str | None
+    oura_authorize_url: str
+    oura_token_url: str
     app_paths: AppPaths
 
     @classmethod
@@ -56,6 +61,11 @@ class Settings:
             app_env=os.getenv("LHA_ENV", "development").strip() or "development",
             oura_access_token=_read_oura_token(),
             oura_api_base_url=os.getenv("OURA_API_BASE_URL", "https://api.ouraring.com").rstrip("/"),
+            oura_client_id=_read_env("OURA_CLIENT_ID"),
+            oura_client_secret=_read_env("OURA_CLIENT_SECRET"),
+            oura_redirect_uri=_read_env("OURA_REDIRECT_URI"),
+            oura_authorize_url=os.getenv("OURA_AUTHORIZE_URL", "https://cloud.ouraring.com/oauth/authorize").rstrip("/"),
+            oura_token_url=os.getenv("OURA_TOKEN_URL", "https://api.ouraring.com/oauth/token").rstrip("/"),
             app_paths=paths,
         )
 
@@ -71,7 +81,12 @@ def ensure_app_dirs(paths: AppPaths) -> None:
 
 def _read_oura_token() -> str | None:
     for name in ("OURA_ACCESS_TOKEN", "OURA_PERSONAL_ACCESS_TOKEN", "OURA_TOKEN"):
-        value = (os.getenv(name, "") or "").strip()
+        value = _read_env(name)
         if value:
             return value
     return None
+
+
+def _read_env(name: str) -> str | None:
+    value = (os.getenv(name, "") or "").strip()
+    return value or None

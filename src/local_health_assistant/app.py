@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 
 from local_health_assistant.config import Settings
 from local_health_assistant.models import (
@@ -14,7 +14,7 @@ from local_health_assistant.models import (
     ReviewGenerateRequest,
     StatusResponse,
 )
-from local_health_assistant.oura import OuraClient
+from local_health_assistant.oura import OuraClient, OuraOAuthClient
 from local_health_assistant.service import HealthService
 from local_health_assistant.storage import Storage
 
@@ -22,7 +22,14 @@ from local_health_assistant.storage import Storage
 settings = Settings.load()
 storage = Storage(settings.app_paths)
 oura_client = OuraClient(settings.oura_access_token, settings.oura_api_base_url)
-service = HealthService(storage, oura_client)
+oura_oauth_client = OuraOAuthClient(
+    client_id=settings.oura_client_id,
+    client_secret=settings.oura_client_secret,
+    redirect_uri=settings.oura_redirect_uri,
+    authorize_url=settings.oura_authorize_url,
+    token_url=settings.oura_token_url,
+)
+service = HealthService(storage, oura_client, oura_oauth_client)
 app = FastAPI(title="Local Health Assistant", version="0.1.0")
 
 
@@ -41,6 +48,18 @@ def health_status() -> StatusResponse:
 @app.get("/health/goals")
 def get_goals() -> dict[str, object]:
     return {"goals": storage.load_goals().model_dump(mode="json")}
+
+
+@app.get("/auth/oura/login")
+def auth_oura_login() -> dict[str, object]:
+    result = service.start_oura_oauth()
+    return result.model_dump(mode="json")
+
+
+@app.get("/auth/oura/callback")
+def auth_oura_callback(code: str = Query(...), state: str = Query(...)) -> dict[str, object]:
+    result = service.complete_oura_oauth(code, state)
+    return result.model_dump(mode="json")
 
 
 @app.put("/health/goals")
