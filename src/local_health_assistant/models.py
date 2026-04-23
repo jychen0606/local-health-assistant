@@ -89,6 +89,43 @@ class OuraCallbackResponse(BaseModel):
     scopes: list[str] = Field(default_factory=list)
 
 
+class BaselineProfile(BaseModel):
+    age: int | None = None
+    sex: str | None = None
+    height_cm: float | None = None
+    weight_kg: float | None = None
+    bmi: float | None = None
+    waist_cm: float | None = None
+    hip_cm: float | None = None
+    waist_hip_ratio: float | None = None
+    smoking: str | None = None
+    alcohol: str | None = None
+    exercise: str | None = None
+
+
+class HealthMarker(BaseModel):
+    marker_key: str
+    label: str
+    value: str
+    unit: str = ""
+    severity: str = "info"
+    observed_on: date
+    source: str = "baseline"
+
+
+class ReportRecord(BaseModel):
+    report_date: date
+    source_type: str
+    source_file: str
+    anonymized: bool = True
+
+
+class BaselineResponse(BaseModel):
+    profile: BaselineProfile
+    markers: list[HealthMarker]
+    reports: list[ReportRecord]
+
+
 class InsightsGenerateRequest(BaseModel):
     target_date: date | None = None
 

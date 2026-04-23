@@ -14,6 +14,7 @@ This repository now contains:
 - daily review and advice endpoints with rules-first logic
 - manual Oura daily sync for sleep, readiness, and activity summaries
 - explainable personal signal scoring for behavior hypotheses
+- anonymized baseline profile and health marker storage
 
 The service intentionally does not depend on CodexBridge in version 1. The first useful loop should stay deterministic and local: parse simple facts, store them, compare against goals, generate reviews, and record advice gaps. LLM-backed wording can be added later after the core data loop is stable.
 
@@ -111,6 +112,7 @@ The service stores the raw Oura response at `data/health/oura_snapshots/YYYY-MM-
 ## Initial API surface
 
 - `GET /health/status`
+- `GET /health/baseline`
 - `GET /health/goals`
 - `PUT /health/goals`
 - `POST /health/ingest/message`

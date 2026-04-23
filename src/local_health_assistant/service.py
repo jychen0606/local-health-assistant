@@ -3,10 +3,12 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
+from local_health_assistant.baseline import get_baseline, import_baseline_json
 from local_health_assistant.insights import InsightInputs, generate_daily_insights
 from local_health_assistant.models import (
     AdviceRequest,
     AdviceResponse,
+    BaselineResponse,
     DailyInsightsResponse,
     MessageIngestRequest,
     MessageIngestResponse,
@@ -91,6 +93,12 @@ class HealthService:
 
     def get_review(self, target_date: date) -> ReviewResponse | None:
         return self.storage.get_review(target_date)
+
+    def import_baseline_report(self, path: str) -> BaselineResponse:
+        return import_baseline_json(self.storage, path)
+
+    def get_baseline(self) -> BaselineResponse:
+        return get_baseline(self.storage)
 
     def generate_insights(self, target_date: date | None = None) -> DailyInsightsResponse:
         insight_date = target_date or (date.today() - timedelta(days=1))

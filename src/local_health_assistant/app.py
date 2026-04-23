@@ -50,6 +50,11 @@ def get_goals() -> dict[str, object]:
     return {"goals": storage.load_goals().model_dump(mode="json")}
 
 
+@app.get("/health/baseline")
+def get_baseline() -> dict[str, object]:
+    return service.get_baseline().model_dump(mode="json")
+
+
 @app.get("/auth/oura/login")
 def auth_oura_login() -> dict[str, object]:
     try:
@@ -143,3 +148,8 @@ def get_oura_daily(target_date: date) -> dict[str, object]:
     if not metrics:
         raise HTTPException(status_code=404, detail="Oura metrics not found")
     return {"metrics": metrics}
+
+
+service.import_baseline_report(
+    "/Users/cjyyyyy/Documents/Playground/local-health-assistant/docs/examples/baseline-2026-01-24.json"
+)

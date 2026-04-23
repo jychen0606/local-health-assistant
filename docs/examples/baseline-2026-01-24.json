@@ -1,0 +1,153 @@
+{
+  "report_date": "2026-01-24",
+  "source_type": "physical_exam_report",
+  "person": {
+    "age": 26,
+    "sex": "female"
+  },
+  "body_metrics": {
+    "height_cm": 159.4,
+    "weight_kg": 57.0,
+    "bmi": 22.43,
+    "waist_cm": 79.0,
+    "hip_cm": 91.0,
+    "waist_hip_ratio": 0.87
+  },
+  "lifestyle": {
+    "smoking": "none",
+    "alcohol": "occasional",
+    "exercise": "1-2 sessions per week, around 60 minutes each"
+  },
+  "abnormal_findings": [
+    {
+      "key": "low_diastolic_blood_pressure",
+      "label": "舒张压偏低",
+      "value": 57,
+      "unit": "mmHg",
+      "severity": "mild"
+    },
+    {
+      "key": "high_waist_hip_ratio",
+      "label": "腰臀比偏高",
+      "value": 0.87,
+      "unit": "",
+      "severity": "mild"
+    },
+    {
+      "key": "sinus_bradycardia",
+      "label": "窦性心动过缓",
+      "value": 56,
+      "unit": "beats/min",
+      "severity": "mild"
+    },
+    {
+      "key": "low_alkaline_phosphatase",
+      "label": "碱性磷酸酶偏低",
+      "value": 34,
+      "unit": "U/L",
+      "severity": "mild"
+    },
+    {
+      "key": "high_total_cholesterol",
+      "label": "总胆固醇偏高",
+      "value": 6.08,
+      "unit": "mmol/L",
+      "severity": "moderate"
+    },
+    {
+      "key": "high_urea",
+      "label": "尿素偏高",
+      "value": 8.24,
+      "unit": "mmol/L",
+      "severity": "mild"
+    },
+    {
+      "key": "high_uric_acid",
+      "label": "尿酸偏高",
+      "value": 460,
+      "unit": "umol/L",
+      "severity": "moderate"
+    },
+    {
+      "key": "urine_wbc_positive",
+      "label": "尿白细胞异常",
+      "value": "±",
+      "unit": "",
+      "severity": "mild"
+    },
+    {
+      "key": "urine_wbc_microscopy_high",
+      "label": "尿白细胞镜检偏高",
+      "value": "8-10",
+      "unit": "/HP",
+      "severity": "mild"
+    },
+    {
+      "key": "urine_epithelial_cells_positive",
+      "label": "尿上皮细胞镜检异常",
+      "value": "+",
+      "unit": "",
+      "severity": "mild"
+    },
+    {
+      "key": "breast_hyperplasia",
+      "label": "乳腺增生/双乳小叶增生症声像",
+      "value": "present",
+      "unit": "",
+      "severity": "mild"
+    },
+    {
+      "key": "pelvic_effusion",
+      "label": "盆腔积液",
+      "value": 16,
+      "unit": "mm",
+      "severity": "mild"
+    },
+    {
+      "key": "straightened_cervical_lordosis",
+      "label": "颈椎生理曲度变直",
+      "value": "present",
+      "unit": "",
+      "severity": "mild"
+    },
+    {
+      "key": "low_hepatitis_b_surface_antibody",
+      "label": "乙肝表面抗体不足",
+      "value": 5.51,
+      "unit": "mIU/mL",
+      "severity": "mild"
+    }
+  ],
+  "normal_reference_items": {
+    "fasting_glucose_mmol_l": 4.79,
+    "creatinine_umol_l": 73,
+    "hdl_c_mmol_l": 1.61,
+    "triglycerides_mmol_l": 0.81,
+    "hs_crp_mg_l": 0.41,
+    "bone_density": "within age range",
+    "thyroid_ultrasound": "no obvious abnormality",
+    "abdominal_ultrasound": "no obvious abnormality",
+    "chest_xray": "no obvious abnormality",
+    "lumbar_xray": "no obvious bone abnormality"
+  },
+  "behavior_constraints": [
+    {
+      "key": "urate_aware_nutrition",
+      "reason": "Uric acid is elevated, so avoid default high-purine eating suggestions."
+    },
+    {
+      "key": "lipid_aware_nutrition",
+      "reason": "Total cholesterol is elevated, so long-term fat quality and processed-food load matter."
+    },
+    {
+      "key": "conservative_recovery_guidance",
+      "reason": "Sinus bradycardia is noted, so exercise and recovery advice should stay conservative and symptom-aware."
+    },
+    {
+      "key": "body_fat_distribution_focus",
+      "reason": "BMI is normal but waist-hip ratio is elevated, so body composition and fat distribution still matter."
+    }
+  ],
+  "source_file": "/Users/cjyyyyy/Desktop/74dc1c4a-6dbf-4f69-a1ea-3e3e5dbb03ed.pdf",
+  "anonymized": true
+}

@@ -170,6 +170,36 @@ SCHEMA_STATEMENTS = [
         updated_at TEXT NOT NULL
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS baseline_profile (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        payload_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS baseline_reports (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        report_date TEXT NOT NULL,
+        source_type TEXT NOT NULL,
+        source_file TEXT NOT NULL,
+        anonymized INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS health_markers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        marker_key TEXT NOT NULL,
+        label TEXT NOT NULL,
+        value_text TEXT NOT NULL,
+        unit TEXT,
+        severity TEXT NOT NULL,
+        observed_on TEXT NOT NULL,
+        source TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )
+    """,
 ]
 
 
@@ -656,6 +686,93 @@ class Storage:
                 (provider,),
             ).fetchone()
         return dict(row) if row else None
+
+    def save_baseline_profile(self, profile: dict[str, Any]) -> None:
+        self._insert_simple(
+            """
+            INSERT INTO baseline_profile (id, payload_json, updated_at)
+            VALUES (1, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                payload_json = excluded.payload_json,
+                updated_at = excluded.updated_at
+            """,
+            (json.dumps(profile, ensure_ascii=False), utc_now()),
+        )
+
+    def get_baseline_profile(self) -> dict[str, Any]:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT payload_json FROM baseline_profile
+                WHERE id = 1
+                """
+            ).fetchone()
+        if not row:
+            return {}
+        return json.loads(row["payload_json"])
+
+    def add_baseline_report(self, report_date: str, source_type: str, source_file: str, anonymized: bool) -> None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id FROM baseline_reports
+                WHERE report_date = ? AND source_file = ?
+                """,
+                (report_date, source_file),
+            ).fetchone()
+            if row:
+                return
+            conn.execute(
+                """
+                INSERT INTO baseline_reports (report_date, source_type, source_file, anonymized, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (report_date, source_type, source_file, 1 if anonymized else 0, utc_now()),
+            )
+            conn.commit()
+
+    def replace_health_markers(self, markers: list[dict[str, Any]], source: str) -> None:
+        with self.connect() as conn:
+            conn.execute("DELETE FROM health_markers WHERE source = ?", (source,))
+            for marker in markers:
+                conn.execute(
+                    """
+                    INSERT INTO health_markers (
+                        marker_key, label, value_text, unit, severity, observed_on, source, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        marker["marker_key"],
+                        marker["label"],
+                        marker["value"],
+                        marker.get("unit", ""),
+                        marker.get("severity", "info"),
+                        marker["observed_on"],
+                        source,
+                        utc_now(),
+                    ),
+                )
+            conn.commit()
+
+    def list_health_markers(self) -> list[dict[str, Any]]:
+        return self._query_many(
+            """
+            SELECT marker_key, label, value_text, unit, severity, observed_on, source
+            FROM health_markers
+            ORDER BY observed_on DESC, id ASC
+            """,
+            (),
+        )
+
+    def list_baseline_reports(self) -> list[dict[str, Any]]:
+        return self._query_many(
+            """
+            SELECT report_date, source_type, source_file, anonymized
+            FROM baseline_reports
+            ORDER BY report_date DESC, id DESC
+            """,
+            (),
+        )
 
     def _has_goal_snapshots(self) -> bool:
         with self.connect() as conn:
