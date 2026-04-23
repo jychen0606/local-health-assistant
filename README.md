@@ -13,6 +13,7 @@ This repository now contains:
 - message ingest for diet, hunger, and weight logs
 - daily review and advice endpoints with rules-first logic
 - manual Oura daily sync for sleep, readiness, and activity summaries
+- explainable personal signal scoring for behavior hypotheses
 
 The service intentionally does not depend on CodexBridge in version 1. The first useful loop should stay deterministic and local: parse simple facts, store them, compare against goals, generate reviews, and record advice gaps. LLM-backed wording can be added later after the core data loop is stable.
 
@@ -59,6 +60,20 @@ Create a Personal Access Token from Oura and set one of these environment variab
 export OURA_ACCESS_TOKEN="your-token"
 ```
 
+For local testing, you can also keep the token in an ignored `.env.local` file:
+
+```bash
+cp .env.example .env.local
+```
+
+Then edit `.env.local` locally and run commands with:
+
+```bash
+set -a
+source .env.local
+set +a
+```
+
 Accepted aliases:
 
 - `OURA_ACCESS_TOKEN`
@@ -83,6 +98,8 @@ The service stores the raw Oura response at `data/health/oura_snapshots/YYYY-MM-
 - `POST /health/ingest/message`
 - `POST /health/reviews/generate`
 - `GET /health/reviews/{date}`
+- `POST /health/insights/generate`
+- `GET /health/insights/{date}`
 - `POST /health/advice/respond`
 - `POST /health/oura/sync`
 - `GET /health/oura/daily/{date}`

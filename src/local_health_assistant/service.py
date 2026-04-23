@@ -3,9 +3,11 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
+from local_health_assistant.insights import InsightInputs, generate_daily_insights
 from local_health_assistant.models import (
     AdviceRequest,
     AdviceResponse,
+    DailyInsightsResponse,
     MessageIngestRequest,
     MessageIngestResponse,
     ReviewResponse,
@@ -74,6 +76,30 @@ class HealthService:
 
     def get_review(self, target_date: date) -> ReviewResponse | None:
         return self.storage.get_review(target_date)
+
+    def generate_insights(self, target_date: date | None = None) -> DailyInsightsResponse:
+        insight_date = target_date or (date.today() - timedelta(days=1))
+        result = generate_daily_insights(
+            InsightInputs(
+                target_date=insight_date,
+                oura_metrics=self.storage.get_oura_daily_metrics(insight_date),
+                food_logs=self.storage.list_food_logs_for_date(insight_date),
+                hunger_logs=self.storage.list_hunger_logs_for_date(insight_date),
+                latest_weight=self.storage.latest_weight(),
+            )
+        )
+        self.storage.save_daily_insights(
+            insight_date,
+            result.features,
+            [item.model_dump(mode="json") for item in result.hypotheses],
+        )
+        return result
+
+    def get_insights(self, target_date: date) -> DailyInsightsResponse | None:
+        stored = self.storage.get_daily_insights(target_date)
+        if not stored:
+            return None
+        return DailyInsightsResponse.model_validate(stored)
 
     def respond_to_advice(self, request: AdviceRequest) -> AdviceResponse:
         occurred_at = request.requested_at or datetime.now(timezone.utc)

@@ -129,6 +129,25 @@ SCHEMA_STATEMENTS = [
         created_at TEXT NOT NULL
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS daily_features (
+        date TEXT PRIMARY KEY,
+        feature_payload_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS hypothesis_scores (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT NOT NULL,
+        hypothesis_key TEXT NOT NULL,
+        score REAL NOT NULL,
+        label TEXT NOT NULL,
+        evidence_json TEXT NOT NULL,
+        recommendation TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )
+    """,
 ]
 
 
@@ -392,6 +411,17 @@ class Storage:
             (start,),
         )
 
+    def list_hunger_logs_for_date(self, target_date: date) -> list[dict[str, Any]]:
+        prefix = target_date.isoformat()
+        return self._query_many(
+            """
+            SELECT * FROM hunger_logs
+            WHERE logged_at LIKE ?
+            ORDER BY logged_at ASC
+            """,
+            (f"{prefix}%",),
+        )
+
     def latest_weight(self) -> dict[str, Any] | None:
         with self.connect() as conn:
             row = conn.execute(
@@ -459,6 +489,73 @@ class Storage:
             realism_note=row["realism_note"],
             markdown_path=row["markdown_path"],
         )
+
+    def save_daily_insights(self, target_date: date, features: dict[str, Any], hypotheses: list[dict[str, Any]]) -> None:
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO daily_features (date, feature_payload_json, created_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(date) DO UPDATE SET
+                    feature_payload_json = excluded.feature_payload_json,
+                    created_at = excluded.created_at
+                """,
+                (target_date.isoformat(), json.dumps(features, ensure_ascii=False), now),
+            )
+            conn.execute("DELETE FROM hypothesis_scores WHERE date = ?", (target_date.isoformat(),))
+            for item in hypotheses:
+                conn.execute(
+                    """
+                    INSERT INTO hypothesis_scores (
+                        date, hypothesis_key, score, label, evidence_json, recommendation, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        target_date.isoformat(),
+                        item["hypothesis_key"],
+                        item["score"],
+                        item["label"],
+                        json.dumps(item["evidence"], ensure_ascii=False),
+                        item["recommendation"],
+                        now,
+                    ),
+                )
+            conn.commit()
+
+    def get_daily_insights(self, target_date: date) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            feature_row = conn.execute(
+                """
+                SELECT * FROM daily_features
+                WHERE date = ?
+                """,
+                (target_date.isoformat(),),
+            ).fetchone()
+            if not feature_row:
+                return None
+            score_rows = conn.execute(
+                """
+                SELECT * FROM hypothesis_scores
+                WHERE date = ?
+                ORDER BY score DESC
+                """,
+                (target_date.isoformat(),),
+            ).fetchall()
+        return {
+            "date": target_date,
+            "features": json.loads(feature_row["feature_payload_json"]),
+            "hypotheses": [
+                {
+                    "hypothesis_key": row["hypothesis_key"],
+                    "score": row["score"],
+                    "label": row["label"],
+                    "evidence": json.loads(row["evidence_json"]),
+                    "recommendation": row["recommendation"],
+                }
+                for row in score_rows
+            ],
+        }
 
     def _has_goal_snapshots(self) -> bool:
         with self.connect() as conn:

@@ -78,6 +78,24 @@ class OuraSyncRequest(BaseModel):
     trigger_type: Literal["manual", "scheduled"] = "manual"
 
 
+class InsightsGenerateRequest(BaseModel):
+    target_date: date | None = None
+
+
+class HypothesisScore(BaseModel):
+    hypothesis_key: str
+    score: float
+    label: str
+    evidence: list[str]
+    recommendation: str
+
+
+class DailyInsightsResponse(BaseModel):
+    date: date
+    features: dict[str, Any]
+    hypotheses: list[HypothesisScore]
+
+
 class StatusResponse(BaseModel):
     app_name: str
     environment: str

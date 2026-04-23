@@ -8,6 +8,7 @@ from local_health_assistant.config import Settings
 from local_health_assistant.models import (
     AdviceRequest,
     GoalUpdateRequest,
+    InsightsGenerateRequest,
     MessageIngestRequest,
     OuraSyncRequest,
     ReviewGenerateRequest,
@@ -66,6 +67,20 @@ def get_review(target_date: date) -> dict[str, object]:
     if not review:
         raise HTTPException(status_code=404, detail="Review not found")
     return review.model_dump(mode="json")
+
+
+@app.post("/health/insights/generate")
+def generate_insights(request: InsightsGenerateRequest) -> dict[str, object]:
+    result = service.generate_insights(request.target_date)
+    return result.model_dump(mode="json")
+
+
+@app.get("/health/insights/{target_date}")
+def get_insights(target_date: date) -> dict[str, object]:
+    insights = service.get_insights(target_date)
+    if not insights:
+        raise HTTPException(status_code=404, detail="Insights not found")
+    return insights.model_dump(mode="json")
 
 
 @app.post("/health/advice/respond")
