@@ -1,0 +1,78 @@
+from __future__ import annotations
+
+from datetime import date
+
+from fastapi import FastAPI, HTTPException
+
+from local_health_assistant.config import Settings
+from local_health_assistant.models import (
+    AdviceRequest,
+    GoalUpdateRequest,
+    MessageIngestRequest,
+    OuraSyncRequest,
+    ReviewGenerateRequest,
+    StatusResponse,
+)
+from local_health_assistant.service import HealthService
+from local_health_assistant.storage import Storage
+
+
+settings = Settings.load()
+storage = Storage(settings.app_paths)
+service = HealthService(storage)
+app = FastAPI(title="Local Health Assistant", version="0.1.0")
+
+
+@app.get("/health/status", response_model=StatusResponse)
+def health_status() -> StatusResponse:
+    return StatusResponse(
+        app_name=settings.app_name,
+        environment=settings.app_env,
+        db_path=str(settings.app_paths.db_path),
+        goals_path=str(settings.app_paths.goals_path),
+        reviews_dir=str(settings.app_paths.reviews_dir),
+        snapshots_dir=str(settings.app_paths.snapshots_dir),
+    )
+
+
+@app.get("/health/goals")
+def get_goals() -> dict[str, object]:
+    return {"goals": storage.load_goals().model_dump(mode="json")}
+
+
+@app.put("/health/goals")
+def put_goals(request: GoalUpdateRequest) -> dict[str, object]:
+    saved = storage.save_goals(request.goals)
+    return {"goals": saved.model_dump(mode="json")}
+
+
+@app.post("/health/ingest/message")
+def ingest_message(request: MessageIngestRequest) -> dict[str, object]:
+    result = service.ingest_message(request)
+    return result.model_dump(mode="json")
+
+
+@app.post("/health/reviews/generate")
+def generate_review(request: ReviewGenerateRequest) -> dict[str, object]:
+    result = service.generate_review(request.target_date)
+    return result.model_dump(mode="json")
+
+
+@app.get("/health/reviews/{target_date}")
+def get_review(target_date: date) -> dict[str, object]:
+    review = service.get_review(target_date)
+    if not review:
+        raise HTTPException(status_code=404, detail="Review not found")
+    return review.model_dump(mode="json")
+
+
+@app.post("/health/advice/respond")
+def advice_respond(request: AdviceRequest) -> dict[str, object]:
+    result = service.respond_to_advice(request)
+    return result.model_dump(mode="json")
+
+
+@app.post("/health/oura/sync")
+def oura_sync(request: OuraSyncRequest) -> dict[str, object]:
+    result = service.sync_oura(request.target_date, request.trigger_type)
+    raise HTTPException(status_code=501, detail=result)

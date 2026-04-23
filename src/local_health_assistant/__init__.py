@@ -1,0 +1,1 @@
+"""Local health assistant package."""
