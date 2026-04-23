@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
 import secrets
+import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 
@@ -16,6 +19,23 @@ class OuraConfigError(RuntimeError):
 
 class OuraAPIError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class OuraProblem:
+    status: int | None
+    title: str
+    detail: str
+    error: str | None = None
+    error_description: str | None = None
+
+
+def _ssl_context() -> ssl.SSLContext:
+    configured = (os.getenv("LHA_SSL_CERT_FILE", "") or "").strip()
+    cafile = Path(configured) if configured else Path("/etc/ssl/cert.pem")
+    if cafile.exists():
+        return ssl.create_default_context(cafile=str(cafile))
+    return ssl.create_default_context()
 
 
 @dataclass(frozen=True)
@@ -52,11 +72,10 @@ class OuraClient:
             },
         )
         try:
-            with urllib.request.urlopen(req, timeout=45) as resp:
+            with urllib.request.urlopen(req, timeout=45, context=_ssl_context()) as resp:
                 raw = resp.read().decode("utf-8", errors="replace")
         except urllib.error.HTTPError as e:
-            detail = e.read().decode("utf-8", errors="replace").strip()
-            raise OuraAPIError(f"Oura {collection} request failed with HTTP {e.code}: {detail}") from e
+            raise _error_from_http_error(e, f"Oura {collection} request failed") from e
         except urllib.error.URLError as e:
             raise OuraAPIError(f"Oura {collection} request failed: {e}") from e
 
@@ -112,11 +131,10 @@ class OuraOAuthClient:
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         try:
-            with urllib.request.urlopen(req, timeout=45) as resp:
+            with urllib.request.urlopen(req, timeout=45, context=_ssl_context()) as resp:
                 raw = resp.read().decode("utf-8", errors="replace")
         except urllib.error.HTTPError as e:
-            detail = e.read().decode("utf-8", errors="replace").strip()
-            raise OuraAPIError(f"Oura token exchange failed with HTTP {e.code}: {detail}") from e
+            raise _error_from_http_error(e, "Oura token exchange failed") from e
         except urllib.error.URLError as e:
             raise OuraAPIError(f"Oura token exchange failed: {e}") from e
         try:
@@ -125,6 +143,38 @@ class OuraOAuthClient:
             raise OuraAPIError(f"Oura token exchange returned non-JSON: {raw[:500]}") from e
         if not isinstance(parsed, dict):
             raise OuraAPIError("Oura token exchange returned an unexpected payload")
+        return parsed
+
+    def refresh_access_token(self, refresh_token: str) -> dict[str, Any]:
+        if not self.client_id or not self.client_secret:
+            raise OuraConfigError("Missing OURA_CLIENT_ID or OURA_CLIENT_SECRET.")
+        payload = urllib.parse.urlencode(
+            {
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+                "client_id": self.client_id,
+                "client_secret": self.client_secret,
+            }
+        ).encode("utf-8")
+        req = urllib.request.Request(
+            url=self.token_url,
+            data=payload,
+            method="POST",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=45, context=_ssl_context()) as resp:
+                raw = resp.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as e:
+            raise _error_from_http_error(e, "Oura refresh token exchange failed") from e
+        except urllib.error.URLError as e:
+            raise OuraAPIError(f"Oura refresh token exchange failed: {e}") from e
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise OuraAPIError(f"Oura refresh token exchange returned non-JSON: {raw[:500]}") from e
+        if not isinstance(parsed, dict):
+            raise OuraAPIError("Oura refresh token exchange returned an unexpected payload")
         return parsed
 
 
@@ -136,6 +186,16 @@ def compute_expires_at(expires_in: Any) -> str | None:
     except (TypeError, ValueError):
         return None
     return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
+
+
+def is_token_expired(expires_at: str | None, skew_seconds: int = 60) -> bool:
+    if not expires_at:
+        return False
+    try:
+        parsed = datetime.fromisoformat(expires_at)
+    except ValueError:
+        return False
+    return parsed <= datetime.now(timezone.utc) + timedelta(seconds=skew_seconds)
 
 
 def normalize_daily_metrics(snapshot: dict[str, Any], target_date: date, snapshot_path: str) -> dict[str, Any]:
@@ -161,16 +221,17 @@ def normalize_daily_metrics(snapshot: dict[str, Any], target_date: date, snapsho
         "resting_heart_rate": _float_or_none(
             readiness.get("resting_heart_rate")
             or readiness.get("lowest_resting_heart_rate")
-            or sleep.get("lowest_heart_rate")
         ),
         "hrv_balance": _float_or_none(
             readiness.get("hrv_balance")
-            or readiness_contributors.get("hrv_balance")
             or sleep.get("average_hrv")
         ),
         "activity_score": _int_or_none(activity.get("score")),
         "active_calories": _int_or_none(activity.get("active_calories")),
         "steps": _int_or_none(activity.get("steps")),
+        "sleep_contributors": sleep_contributors or None,
+        "readiness_contributors": readiness_contributors or None,
+        "activity_contributors": _dict_value(activity, "contributors") or None,
         "snapshot_path": snapshot_path,
     }
 
@@ -221,3 +282,23 @@ def _float_or_none(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _error_from_http_error(error: urllib.error.HTTPError, prefix: str) -> OuraAPIError:
+    raw = error.read().decode("utf-8", errors="replace").strip()
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return OuraAPIError(f"{prefix} with HTTP {error.code}: {raw}")
+    if isinstance(payload, dict):
+        problem = OuraProblem(
+            status=payload.get("status") if isinstance(payload.get("status"), int) else error.code,
+            title=str(payload.get("title") or prefix),
+            detail=str(payload.get("detail") or raw),
+            error=str(payload.get("error")) if payload.get("error") is not None else None,
+            error_description=(
+                str(payload.get("error_description")) if payload.get("error_description") is not None else None
+            ),
+        )
+        return OuraAPIError(json.dumps(problem.__dict__, ensure_ascii=False))
+    return OuraAPIError(f"{prefix} with HTTP {error.code}: {raw}")

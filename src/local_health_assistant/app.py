@@ -52,13 +52,37 @@ def get_goals() -> dict[str, object]:
 
 @app.get("/auth/oura/login")
 def auth_oura_login() -> dict[str, object]:
-    result = service.start_oura_oauth()
+    try:
+        result = service.start_oura_oauth()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
     return result.model_dump(mode="json")
 
 
 @app.get("/auth/oura/callback")
-def auth_oura_callback(code: str = Query(...), state: str = Query(...)) -> dict[str, object]:
-    result = service.complete_oura_oauth(code, state)
+def auth_oura_callback(
+    code: str | None = Query(default=None),
+    state: str | None = Query(default=None),
+    error: str | None = Query(default=None),
+    error_description: str | None = Query(default=None),
+) -> dict[str, object]:
+    if error:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": error,
+                "error_description": error_description or "",
+            },
+        )
+    if not code or not state:
+        raise HTTPException(
+            status_code=400,
+            detail="Missing code or state in Oura callback.",
+        )
+    try:
+        result = service.complete_oura_oauth(code, state)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
     return result.model_dump(mode="json")
 
 

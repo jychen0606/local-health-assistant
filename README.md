@@ -70,6 +70,8 @@ http://127.0.0.1:8000/auth/oura/login
 
 The response will contain an authorization URL. Open it in your browser, authorize the app, and Oura will redirect back to the callback endpoint so the tokens can be stored locally.
 
+The service stores both `access_token` and `refresh_token` locally in SQLite. When the access token expires, the service will attempt to refresh it automatically and overwrite the stored refresh token with the new one returned by Oura. This matters because Oura refresh tokens are single-use.
+
 The project still supports a direct bearer token if you happen to have one:
 
 ```bash

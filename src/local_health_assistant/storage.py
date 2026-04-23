@@ -72,6 +72,9 @@ SCHEMA_STATEMENTS = [
         activity_score INTEGER,
         active_calories INTEGER,
         steps INTEGER,
+        sleep_contributors_json TEXT,
+        readiness_contributors_json TEXT,
+        activity_contributors_json TEXT,
         snapshot_path TEXT,
         synced_at TEXT NOT NULL
     )
@@ -331,8 +334,10 @@ class Storage:
             INSERT INTO oura_daily_metrics (
                 date, sleep_score, total_sleep_minutes, sleep_efficiency,
                 readiness_score, resting_heart_rate, hrv_balance,
-                activity_score, active_calories, steps, snapshot_path, synced_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                activity_score, active_calories, steps,
+                sleep_contributors_json, readiness_contributors_json, activity_contributors_json,
+                snapshot_path, synced_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(date) DO UPDATE SET
                 sleep_score = excluded.sleep_score,
                 total_sleep_minutes = excluded.total_sleep_minutes,
@@ -343,6 +348,9 @@ class Storage:
                 activity_score = excluded.activity_score,
                 active_calories = excluded.active_calories,
                 steps = excluded.steps,
+                sleep_contributors_json = excluded.sleep_contributors_json,
+                readiness_contributors_json = excluded.readiness_contributors_json,
+                activity_contributors_json = excluded.activity_contributors_json,
                 snapshot_path = excluded.snapshot_path,
                 synced_at = excluded.synced_at
             """,
@@ -357,6 +365,9 @@ class Storage:
                 metrics.get("activity_score"),
                 metrics.get("active_calories"),
                 metrics.get("steps"),
+                _json_or_none(metrics.get("sleep_contributors")),
+                _json_or_none(metrics.get("readiness_contributors")),
+                _json_or_none(metrics.get("activity_contributors")),
                 metrics.get("snapshot_path"),
                 utc_now(),
             ),
@@ -664,3 +675,9 @@ class Storage:
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _json_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    return json.dumps(value, ensure_ascii=False)

@@ -14,7 +14,14 @@ from local_health_assistant.models import (
     OuraCallbackResponse,
     ReviewResponse,
 )
-from local_health_assistant.oura import OuraClient, OuraOAuthClient, compute_expires_at, normalize_daily_metrics
+from local_health_assistant.oura import (
+    OuraAPIError,
+    OuraClient,
+    OuraOAuthClient,
+    compute_expires_at,
+    is_token_expired,
+    normalize_daily_metrics,
+)
 from local_health_assistant.parsing import parse_message
 from local_health_assistant.storage import Storage
 
@@ -214,7 +221,11 @@ class HealthService:
         except Exception as e:
             message = str(e)
             self.storage.finish_oura_sync(run_id, status="failed", error_message=message)
-            return {"run_id": run_id, "target_date": target_date.isoformat(), "status": "failed", "message": message}
+            result = {"run_id": run_id, "target_date": target_date.isoformat(), "status": "failed", "message": message}
+            problem = self._structured_oura_problem(e)
+            if problem:
+                result["oura_error"] = problem
+            return result
 
         self.storage.finish_oura_sync(run_id, status="success")
         return {
@@ -227,8 +238,53 @@ class HealthService:
     def _oura_client_with_stored_token(self) -> OuraClient | None:
         token_row = self.storage.get_oauth_token("oura")
         if token_row and token_row.get("access_token"):
-            return OuraClient(str(token_row["access_token"]), self.oura_client.base_url if self.oura_client else "https://api.ouraring.com")
+            token_row = self._refresh_oura_token_if_needed(token_row)
+            return OuraClient(
+                str(token_row["access_token"]),
+                self.oura_client.base_url if self.oura_client else "https://api.ouraring.com",
+            )
         return self.oura_client
+
+    def _refresh_oura_token_if_needed(self, token_row: dict[str, Any]) -> dict[str, Any]:
+        if not is_token_expired(token_row.get("expires_at")):
+            return token_row
+        refresh_token = str(token_row.get("refresh_token") or "").strip()
+        if not refresh_token or self.oura_oauth_client is None:
+            return token_row
+        payload = self.oura_oauth_client.refresh_access_token(refresh_token)
+        access_token = str(payload.get("access_token") or "").strip()
+        if not access_token:
+            raise RuntimeError("Oura refresh token exchange did not return access_token.")
+        new_refresh_token = str(payload.get("refresh_token") or "").strip() or refresh_token
+        scope_value = str(payload.get("scope") or token_row.get("scope") or "").strip() or None
+        token_type = str(payload.get("token_type") or token_row.get("token_type") or "").strip() or None
+        expires_at = compute_expires_at(payload.get("expires_in")) or token_row.get("expires_at")
+        self.storage.save_oauth_token(
+            provider="oura",
+            access_token=access_token,
+            refresh_token=new_refresh_token,
+            token_type=token_type,
+            scope=scope_value,
+            expires_at=expires_at,
+        )
+        refreshed = self.storage.get_oauth_token("oura")
+        return refreshed or {
+            **token_row,
+            "access_token": access_token,
+            "refresh_token": new_refresh_token,
+            "token_type": token_type,
+            "scope": scope_value,
+            "expires_at": expires_at,
+        }
+
+    def _structured_oura_problem(self, error: Exception) -> dict[str, Any] | None:
+        if not isinstance(error, OuraAPIError):
+            return None
+        try:
+            parsed = __import__("json").loads(str(error))
+        except Exception:
+            return None
+        return parsed if isinstance(parsed, dict) else None
 
     def _determine_key_issue(
         self,
