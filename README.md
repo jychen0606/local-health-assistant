@@ -12,8 +12,7 @@ This repository now contains:
 - goal file loading and snapshotting
 - message ingest for diet, hunger, and weight logs
 - daily review and advice endpoints with rules-first logic
-
-The Oura API client is not implemented yet. The endpoint exists so the service boundary and persistence model are stable before the external sync work is added.
+- manual Oura daily sync for sleep, readiness, and activity summaries
 
 The service intentionally does not depend on CodexBridge in version 1. The first useful loop should stay deterministic and local: parse simple facts, store them, compare against goals, generate reviews, and record advice gaps. LLM-backed wording can be added later after the core data loop is stable.
 
@@ -52,6 +51,30 @@ Override the data root if needed:
 export LHA_DATA_DIR="/absolute/path/to/data/health"
 ```
 
+## Oura setup
+
+Create a Personal Access Token from Oura and set one of these environment variables before starting the service:
+
+```bash
+export OURA_ACCESS_TOKEN="your-token"
+```
+
+Accepted aliases:
+
+- `OURA_ACCESS_TOKEN`
+- `OURA_PERSONAL_ACCESS_TOKEN`
+- `OURA_TOKEN`
+
+Manual sync for a date:
+
+```bash
+curl -X POST http://127.0.0.1:8000/health/oura/sync \
+  -H "Content-Type: application/json" \
+  -d '{"target_date": "2026-04-22", "trigger_type": "manual"}'
+```
+
+The service stores the raw Oura response at `data/health/oura_snapshots/YYYY-MM-DD.json` and upserts normalized metrics into SQLite.
+
 ## Initial API surface
 
 - `GET /health/status`
@@ -62,6 +85,7 @@ export LHA_DATA_DIR="/absolute/path/to/data/health"
 - `GET /health/reviews/{date}`
 - `POST /health/advice/respond`
 - `POST /health/oura/sync`
+- `GET /health/oura/daily/{date}`
 
 ## Example ingest request
 

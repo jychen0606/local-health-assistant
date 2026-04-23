@@ -10,13 +10,15 @@ from local_health_assistant.models import (
     MessageIngestResponse,
     ReviewResponse,
 )
+from local_health_assistant.oura import OuraClient, normalize_daily_metrics
 from local_health_assistant.parsing import parse_message
 from local_health_assistant.storage import Storage
 
 
 class HealthService:
-    def __init__(self, storage: Storage):
+    def __init__(self, storage: Storage, oura_client: OuraClient | None = None):
         self.storage = storage
+        self.oura_client = oura_client
 
     def ingest_message(self, request: MessageIngestRequest) -> MessageIngestResponse:
         occurred_at = request.occurred_at or datetime.now(timezone.utc)
@@ -130,12 +132,27 @@ class HealthService:
 
     def sync_oura(self, target_date: date, trigger_type: str) -> dict[str, Any]:
         run_id = self.storage.start_oura_sync(target_date, trigger_type)
-        self.storage.finish_oura_sync(run_id, status="failed", error_message="Oura sync client is not implemented yet.")
+        if self.oura_client is None:
+            message = "Oura client is not configured."
+            self.storage.finish_oura_sync(run_id, status="failed", error_message=message)
+            return {"run_id": run_id, "target_date": target_date.isoformat(), "status": "failed", "message": message}
+
+        try:
+            snapshot = self.oura_client.fetch_daily_snapshot(target_date)
+            snapshot_path = self.storage.save_oura_snapshot(target_date, snapshot)
+            metrics = normalize_daily_metrics(snapshot, target_date, str(snapshot_path))
+            self.storage.upsert_oura_daily_metrics(metrics)
+        except Exception as e:
+            message = str(e)
+            self.storage.finish_oura_sync(run_id, status="failed", error_message=message)
+            return {"run_id": run_id, "target_date": target_date.isoformat(), "status": "failed", "message": message}
+
+        self.storage.finish_oura_sync(run_id, status="success")
         return {
             "run_id": run_id,
             "target_date": target_date.isoformat(),
-            "status": "failed",
-            "message": "Oura sync client is not implemented yet.",
+            "status": "success",
+            "metrics": metrics,
         }
 
     def _determine_key_issue(

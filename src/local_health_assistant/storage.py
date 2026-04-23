@@ -279,6 +279,62 @@ class Storage:
             (status, error_message, utc_now(), run_id),
         )
 
+    def save_oura_snapshot(self, target_date: date, snapshot: dict[str, Any]) -> Path:
+        path = self.paths.snapshots_dir / f"{target_date.isoformat()}.json"
+        path.write_text(
+            json.dumps(snapshot, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        return path
+
+    def upsert_oura_daily_metrics(self, metrics: dict[str, Any]) -> None:
+        self._insert_simple(
+            """
+            INSERT INTO oura_daily_metrics (
+                date, sleep_score, total_sleep_minutes, sleep_efficiency,
+                readiness_score, resting_heart_rate, hrv_balance,
+                activity_score, active_calories, steps, snapshot_path, synced_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(date) DO UPDATE SET
+                sleep_score = excluded.sleep_score,
+                total_sleep_minutes = excluded.total_sleep_minutes,
+                sleep_efficiency = excluded.sleep_efficiency,
+                readiness_score = excluded.readiness_score,
+                resting_heart_rate = excluded.resting_heart_rate,
+                hrv_balance = excluded.hrv_balance,
+                activity_score = excluded.activity_score,
+                active_calories = excluded.active_calories,
+                steps = excluded.steps,
+                snapshot_path = excluded.snapshot_path,
+                synced_at = excluded.synced_at
+            """,
+            (
+                metrics["date"],
+                metrics.get("sleep_score"),
+                metrics.get("total_sleep_minutes"),
+                metrics.get("sleep_efficiency"),
+                metrics.get("readiness_score"),
+                metrics.get("resting_heart_rate"),
+                metrics.get("hrv_balance"),
+                metrics.get("activity_score"),
+                metrics.get("active_calories"),
+                metrics.get("steps"),
+                metrics.get("snapshot_path"),
+                utc_now(),
+            ),
+        )
+
+    def get_oura_daily_metrics(self, target_date: date) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM oura_daily_metrics
+                WHERE date = ?
+                """,
+                (target_date.isoformat(),),
+            ).fetchone()
+        return dict(row) if row else None
+
     def record_advice(self, conversation_event_id: int | None, request: AdviceRequest, advice_text: str, expected_behavior: str, context_payload: dict[str, Any]) -> int:
         with self.connect() as conn:
             cursor = conn.execute(

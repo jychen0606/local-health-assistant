@@ -13,13 +13,15 @@ from local_health_assistant.models import (
     ReviewGenerateRequest,
     StatusResponse,
 )
+from local_health_assistant.oura import OuraClient
 from local_health_assistant.service import HealthService
 from local_health_assistant.storage import Storage
 
 
 settings = Settings.load()
 storage = Storage(settings.app_paths)
-service = HealthService(storage)
+oura_client = OuraClient(settings.oura_access_token, settings.oura_api_base_url)
+service = HealthService(storage, oura_client)
 app = FastAPI(title="Local Health Assistant", version="0.1.0")
 
 
@@ -74,5 +76,12 @@ def advice_respond(request: AdviceRequest) -> dict[str, object]:
 
 @app.post("/health/oura/sync")
 def oura_sync(request: OuraSyncRequest) -> dict[str, object]:
-    result = service.sync_oura(request.target_date, request.trigger_type)
-    raise HTTPException(status_code=501, detail=result)
+    return service.sync_oura(request.target_date, request.trigger_type)
+
+
+@app.get("/health/oura/daily/{target_date}")
+def get_oura_daily(target_date: date) -> dict[str, object]:
+    metrics = storage.get_oura_daily_metrics(target_date)
+    if not metrics:
+        raise HTTPException(status_code=404, detail="Oura metrics not found")
+    return {"metrics": metrics}

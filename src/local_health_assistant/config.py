@@ -34,6 +34,8 @@ class AppPaths:
 class Settings:
     app_name: str
     app_env: str
+    oura_access_token: str | None
+    oura_api_base_url: str
     app_paths: AppPaths
 
     @classmethod
@@ -52,6 +54,8 @@ class Settings:
         return cls(
             app_name="local-health-assistant",
             app_env=os.getenv("LHA_ENV", "development").strip() or "development",
+            oura_access_token=_read_oura_token(),
+            oura_api_base_url=os.getenv("OURA_API_BASE_URL", "https://api.ouraring.com").rstrip("/"),
             app_paths=paths,
         )
 
@@ -63,3 +67,11 @@ def ensure_app_dirs(paths: AppPaths) -> None:
     paths.goals_dir.mkdir(parents=True, exist_ok=True)
     if not paths.goals_path.exists():
         paths.goals_path.write_text(DEFAULT_GOALS_YAML, encoding="utf-8")
+
+
+def _read_oura_token() -> str | None:
+    for name in ("OURA_ACCESS_TOKEN", "OURA_PERSONAL_ACCESS_TOKEN", "OURA_TOKEN"):
+        value = (os.getenv(name, "") or "").strip()
+        if value:
+            return value
+    return None
