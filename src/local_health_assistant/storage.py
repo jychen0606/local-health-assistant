@@ -222,8 +222,30 @@ class Storage:
         with self.connect() as conn:
             for statement in SCHEMA_STATEMENTS:
                 conn.execute(statement)
+            self._apply_migrations(conn)
             conn.commit()
         self.load_goals(snapshot_if_missing=True)
+
+    def _apply_migrations(self, conn: sqlite3.Connection) -> None:
+        self._ensure_columns(
+            conn,
+            "oura_daily_metrics",
+            {
+                "sleep_contributors_json": "TEXT",
+                "readiness_contributors_json": "TEXT",
+                "activity_contributors_json": "TEXT",
+            },
+        )
+
+    def _ensure_columns(self, conn: sqlite3.Connection, table_name: str, columns: dict[str, str]) -> None:
+        existing = {
+            str(row["name"])
+            for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        }
+        for column_name, column_type in columns.items():
+            if column_name in existing:
+                continue
+            conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}")
 
     def load_goals(self, snapshot_if_missing: bool = False) -> GoalPayload:
         payload = yaml.safe_load(self.paths.goals_path.read_text(encoding="utf-8")) or {}
