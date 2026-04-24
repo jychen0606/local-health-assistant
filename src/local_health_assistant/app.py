@@ -201,8 +201,3 @@ def get_oura_daily(target_date: date) -> dict[str, object]:
 @app.post("/health/jobs/morning")
 def run_morning_briefing(request: ReviewGenerateRequest) -> dict[str, object]:
     return service.run_morning_briefing(request.target_date)
-
-
-service.import_baseline_report(
-    "/Users/cjyyyyy/Documents/Playground/local-health-assistant/docs/examples/baseline-2026-01-24.json"
-)
