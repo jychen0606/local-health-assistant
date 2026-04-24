@@ -60,6 +60,19 @@ class OuraClient:
             "daily_activity": self._get_collection("daily_activity", start_date, end_date),
         }
 
+    def fetch_activity_snapshot(self, target_date: date) -> dict[str, Any]:
+        if not self.access_token:
+            raise OuraConfigError(
+                "Missing Oura access token. Set OURA_ACCESS_TOKEN, OURA_PERSONAL_ACCESS_TOKEN, or OURA_TOKEN."
+            )
+        start_date = target_date.isoformat()
+        end_date = (target_date + timedelta(days=1)).isoformat()
+        return {
+            "target_date": start_date,
+            "daily_activity": self._get_collection("daily_activity", start_date, end_date),
+            "workout": self._get_collection("workout", start_date, end_date),
+        }
+
     def _get_collection(self, collection: str, start_date: str, end_date: str) -> dict[str, Any]:
         query = urllib.parse.urlencode({"start_date": start_date, "end_date": end_date})
         url = f"{self.base_url}/v2/usercollection/{collection}?{query}"
@@ -236,6 +249,40 @@ def normalize_daily_metrics(snapshot: dict[str, Any], target_date: date, snapsho
     }
 
 
+def normalize_activity_context(snapshot: dict[str, Any], target_date: date, snapshot_path: str) -> dict[str, Any]:
+    activity = _first_for_day(snapshot.get("daily_activity"), target_date)
+    workouts = _rows_for_day(snapshot.get("workout"), target_date)
+    normalized_workouts: list[dict[str, Any]] = []
+    for row in workouts:
+        workout_key = str(
+            row.get("id")
+            or row.get("workout_id")
+            or row.get("start_datetime")
+            or row.get("day")
+            or secrets.token_hex(8)
+        )
+        normalized_workouts.append(
+            {
+                "workout_key": workout_key,
+                "day": str(row.get("day") or target_date.isoformat()),
+                "start_datetime": row.get("start_datetime"),
+                "end_datetime": row.get("end_datetime"),
+                "sport": row.get("sport") or row.get("type"),
+                "active_calories": _int_or_none(row.get("active_calories") or row.get("calories")),
+                "payload": row,
+            }
+        )
+    return {
+        "date": target_date.isoformat(),
+        "activity_score": _int_or_none(activity.get("score")),
+        "active_calories": _int_or_none(activity.get("active_calories")),
+        "steps": _int_or_none(activity.get("steps")),
+        "activity_contributors": _dict_value(activity, "contributors") or None,
+        "snapshot_path": snapshot_path,
+        "workouts": normalized_workouts,
+    }
+
+
 def _first_for_day(payload: Any, target_date: date) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return {}
@@ -250,6 +297,19 @@ def _first_for_day(payload: Any, target_date: date) -> dict[str, Any]:
         if isinstance(row, dict):
             return row
     return {}
+
+
+def _rows_for_day(payload: Any, target_date: date) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return []
+    rows = payload.get("data")
+    if not isinstance(rows, list):
+        return []
+    target = target_date.isoformat()
+    matched = [row for row in rows if isinstance(row, dict) and row.get("day") == target]
+    if matched:
+        return matched
+    return [row for row in rows if isinstance(row, dict)]
 
 
 def _dict_value(row: dict[str, Any], key: str) -> dict[str, Any]:

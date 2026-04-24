@@ -36,10 +36,16 @@ class ExtractedRecord(BaseModel):
     payload: dict[str, Any]
 
 
+class GeneratedFeedback(BaseModel):
+    feedback_type: str
+    payload: dict[str, Any]
+
+
 class MessageIngestResponse(BaseModel):
     conversation_event_id: int
     extracted_records: list[ExtractedRecord]
     is_advice_request: bool
+    generated_feedback: list[GeneratedFeedback] = Field(default_factory=list)
 
 
 class ReviewGenerateRequest(BaseModel):
@@ -53,6 +59,28 @@ class ReviewResponse(BaseModel):
     recommended_adjustment: str
     realism_note: str
     markdown_path: str
+
+
+class WeightAnomalyReviewResponse(BaseModel):
+    date: date
+    weight_log_id: int
+    weight_kg: float
+    reference_weight_kg: float | None = None
+    delta_kg: float | None = None
+    is_abnormal: bool
+    suspected_drivers: list[str] = Field(default_factory=list)
+    review_text: str
+    recommended_action: str
+
+
+class MealFeedbackResponse(BaseModel):
+    logged_at: datetime
+    meal_slot: str
+    evaluation_summary: str
+    biggest_issue: str
+    positive_note: str | None = None
+    evaluation_text: str
+    next_meal_suggestion: str
 
 
 class AdviceRequest(BaseModel):
@@ -167,3 +195,5 @@ class StatusResponse(BaseModel):
     snapshots_dir: str
     morning_briefing_enabled: bool = False
     morning_briefing_time: str | None = None
+    activity_sync_enabled: bool = False
+    activity_sync_interval_minutes: int | None = None

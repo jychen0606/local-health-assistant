@@ -38,17 +38,20 @@ morning_scheduler = MorningBriefingScheduler(
     hour=settings.morning_briefing_hour,
     minute=settings.morning_briefing_minute,
     poll_seconds=settings.morning_briefing_poll_seconds,
+    activity_sync_enabled=settings.activity_sync_enabled,
+    activity_sync_interval_minutes=settings.activity_sync_interval_minutes,
 )
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    if settings.morning_briefing_enabled:
+    should_start_scheduler = settings.morning_briefing_enabled or settings.activity_sync_enabled
+    if should_start_scheduler:
         morning_scheduler.start()
     try:
         yield
     finally:
-        if settings.morning_briefing_enabled:
+        if should_start_scheduler:
             morning_scheduler.stop()
 
 
@@ -66,6 +69,8 @@ def health_status() -> StatusResponse:
         snapshots_dir=str(settings.app_paths.snapshots_dir),
         morning_briefing_enabled=settings.morning_briefing_enabled,
         morning_briefing_time=f"{settings.morning_briefing_hour:02d}:{settings.morning_briefing_minute:02d}",
+        activity_sync_enabled=settings.activity_sync_enabled,
+        activity_sync_interval_minutes=settings.activity_sync_interval_minutes,
     )
 
 
@@ -141,6 +146,14 @@ def get_review(target_date: date) -> dict[str, object]:
     return review.model_dump(mode="json")
 
 
+@app.get("/health/weights/anomaly/{target_date}")
+def get_weight_anomaly_review(target_date: date) -> dict[str, object]:
+    result = service.get_abnormal_weight_review(target_date)
+    if not result:
+        raise HTTPException(status_code=404, detail="Weight anomaly review not found")
+    return result.model_dump(mode="json")
+
+
 @app.post("/health/insights/generate")
 def generate_insights(request: InsightsGenerateRequest) -> dict[str, object]:
     result = service.generate_insights(request.target_date)
@@ -170,6 +183,11 @@ def advice_outcomes(request: AdviceOutcomeRequest) -> dict[str, object]:
 @app.post("/health/oura/sync")
 def oura_sync(request: OuraSyncRequest) -> dict[str, object]:
     return service.sync_oura(request.target_date, request.trigger_type)
+
+
+@app.post("/health/oura/activity-sync")
+def oura_activity_sync(request: OuraSyncRequest) -> dict[str, object]:
+    return service.run_activity_sync(request.target_date, request.trigger_type)
 
 
 @app.get("/health/oura/daily/{target_date}")

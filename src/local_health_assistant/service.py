@@ -12,11 +12,14 @@ from local_health_assistant.models import (
     AdviceResponse,
     BaselineResponse,
     DailyInsightsResponse,
+    GeneratedFeedback,
+    MealFeedbackResponse,
     MessageIngestRequest,
     MessageIngestResponse,
     OuraAuthStartResponse,
     OuraCallbackResponse,
     ReviewResponse,
+    WeightAnomalyReviewResponse,
 )
 from local_health_assistant.oura import (
     OuraAPIError,
@@ -24,10 +27,16 @@ from local_health_assistant.oura import (
     OuraOAuthClient,
     compute_expires_at,
     is_token_expired,
+    normalize_activity_context,
     normalize_daily_metrics,
 )
 from local_health_assistant.parsing import parse_message
 from local_health_assistant.storage import Storage
+
+SUGARY_KEYWORDS = ("可乐", "奶茶", "果汁", "甜点", "蛋糕", "冰淇淋", "糖", "甜")
+PROCESSED_KEYWORDS = ("炸", "薯条", "汉堡", "香肠", "火腿", "饼干", "零食", "泡面", "加工")
+PROTEIN_KEYWORDS = ("鸡", "蛋", "牛肉", "鱼", "虾", "豆腐", "酸奶", "牛奶", "羊肉", "猪肉")
+VEGETABLE_KEYWORDS = ("菜", "西兰花", "沙拉", "番茄", "黄瓜", "青菜", "胡萝卜", "蔬菜")
 
 
 class HealthService:
@@ -55,13 +64,37 @@ class HealthService:
             }
         )
         parsed = parse_message(request.text, occurred_at)
+        generated_feedback: list[GeneratedFeedback] = []
         for record in parsed.extracted:
             if record.record_type == "food":
-                self.storage.save_food_log(event_id, record.payload, record.confidence)
+                food_log_id = self.storage.save_food_log(event_id, record.payload, record.confidence)
+                meal_feedback = self._evaluate_meal_record(
+                    conversation_event_id=event_id,
+                    food_log_id=food_log_id,
+                    meal_payload=record.payload,
+                )
+                generated_feedback.append(
+                    GeneratedFeedback(
+                        feedback_type="meal_feedback",
+                        payload=meal_feedback.model_dump(mode="json"),
+                    )
+                )
             elif record.record_type == "hunger":
                 self.storage.save_hunger_log(event_id, record.payload, record.confidence)
             elif record.record_type == "weight":
-                self.storage.save_weight_log(event_id, record.payload, record.confidence)
+                weight_log_id = self.storage.save_weight_log(event_id, record.payload, record.confidence)
+                if record.payload.get("measurement_context") == "morning":
+                    anomaly_review = self._evaluate_weight_anomaly(
+                        weight_log_id=weight_log_id,
+                        weight_kg=float(record.payload["weight_kg"]),
+                        logged_at=record.payload["logged_at"],
+                    )
+                    generated_feedback.append(
+                        GeneratedFeedback(
+                            feedback_type="weight_anomaly_review",
+                            payload=anomaly_review.model_dump(mode="json"),
+                        )
+                    )
         if parsed.advice_outcome_status:
             latest_advice = self.storage.latest_advice_record_for_session(request.session_key)
             if latest_advice:
@@ -75,6 +108,7 @@ class HealthService:
             conversation_event_id=event_id,
             extracted_records=parsed.extracted,
             is_advice_request=parsed.is_advice_request,
+            generated_feedback=generated_feedback,
         )
 
     def generate_review(self, target_date: date | None = None) -> ReviewResponse:
@@ -145,6 +179,9 @@ class HealthService:
             return None
         return DailyInsightsResponse.model_validate(stored)
 
+    def get_abnormal_weight_review(self, target_date: date) -> WeightAnomalyReviewResponse | None:
+        return self.storage.get_abnormal_weight_review(target_date)
+
     def respond_to_advice(self, request: AdviceRequest) -> AdviceResponse:
         occurred_at = request.requested_at or datetime.now(timezone.utc)
         event_id = self.storage.create_conversation_event(
@@ -186,6 +223,11 @@ class HealthService:
         if latest_weight and goals.get("target_weight_range_kg", {}).get("max") is not None:
             if latest_weight["weight_kg"] > float(goals["target_weight_range_kg"]["max"]):
                 why += " 当前体重也在目标上沿之外，建议优先保住节奏。"
+        if recent_metrics and (
+            (recent_metrics[0].get("active_calories") or 0) >= 300
+            or (recent_metrics[0].get("steps") or 0) >= 8000
+        ):
+            why += " 今天已经有一定活动量，判断时不建议再用过度限制去做补偿。"
         if "high_uric_acid" in baseline_keys:
             why += " 你有高尿酸基线，后续饮食选择应避免默认走高嘌呤补偿路线。"
         if "high_urea" in baseline_keys:
@@ -308,6 +350,46 @@ class HealthService:
             "metrics": metrics,
         }
 
+    def run_activity_sync(self, target_date: date | None = None, trigger_type: str = "scheduled") -> dict[str, Any]:
+        sync_date = target_date or date.today()
+        run_id = self.storage.start_oura_activity_sync(sync_date, trigger_type)
+        effective_client = self._oura_client_with_stored_token()
+        if effective_client is None:
+            message = "Oura client is not configured."
+            self.storage.finish_oura_activity_sync(run_id, status="failed", error_message=message)
+            return {"run_id": run_id, "target_date": sync_date.isoformat(), "status": "failed", "message": message}
+        try:
+            snapshot = effective_client.fetch_activity_snapshot(sync_date)
+            snapshot_path = self.storage.save_oura_activity_snapshot(sync_date, snapshot)
+            context = normalize_activity_context(snapshot, sync_date, str(snapshot_path))
+            self.storage.patch_oura_activity_metrics(
+                target_date=sync_date,
+                activity_score=context.get("activity_score"),
+                active_calories=context.get("active_calories"),
+                steps=context.get("steps"),
+                activity_contributors=context.get("activity_contributors"),
+                snapshot_path=str(snapshot_path),
+            )
+            new_workouts = self.storage.save_workouts(context.get("workouts") or [])
+        except Exception as e:
+            message = str(e)
+            self.storage.finish_oura_activity_sync(run_id, status="failed", error_message=message)
+            result = {"run_id": run_id, "target_date": sync_date.isoformat(), "status": "failed", "message": message}
+            problem = self._structured_oura_problem(e)
+            if problem:
+                result["oura_error"] = problem
+            return result
+        self.storage.finish_oura_activity_sync(run_id, status="success")
+        return {
+            "run_id": run_id,
+            "target_date": sync_date.isoformat(),
+            "status": "success",
+            "activity_score": context.get("activity_score"),
+            "active_calories": context.get("active_calories"),
+            "steps": context.get("steps"),
+            "new_workout_count": len(new_workouts),
+        }
+
     def _oura_client_with_stored_token(self) -> OuraClient | None:
         token_row = self.storage.get_oauth_token("oura")
         if token_row and token_row.get("access_token"):
@@ -358,6 +440,232 @@ class HealthService:
         except Exception:
             return None
         return parsed if isinstance(parsed, dict) else None
+
+    def _evaluate_meal_record(
+        self,
+        conversation_event_id: int,
+        food_log_id: int,
+        meal_payload: dict[str, Any],
+    ) -> MealFeedbackResponse:
+        logged_at = str(meal_payload["logged_at"])
+        meal_slot = str(meal_payload["meal_slot"])
+        description = str(meal_payload["description"])
+        baseline_keys = {str(item.get("marker_key") or "") for item in self.storage.list_health_markers()}
+        recent_metrics = self.storage.list_recent_metrics(days=3)
+        adherence_summary = self._summarize_recent_adherence()
+        recent_foods = self.storage.list_food_logs_for_window(days=7)
+        today_foods = self.storage.list_food_logs_for_date(date.fromisoformat(logged_at[:10]))
+
+        sugary = _contains_any(description, SUGARY_KEYWORDS)
+        processed = _contains_any(description, PROCESSED_KEYWORDS)
+        protein = _contains_any(description, PROTEIN_KEYWORDS)
+        vegetable = _contains_any(description, VEGETABLE_KEYWORDS)
+        late_night_recent = sum(1 for item in recent_foods if item.get("meal_slot") == "late_night")
+        dessert_like_recent = sum(1 for item in recent_foods if _contains_any(str(item.get("description") or ""), SUGARY_KEYWORDS))
+
+        evaluation_summary = "这顿先算可用，但还不够稳。"
+        biggest_issue = "当前最大问题还不明显。"
+        positive_note: str | None = None
+
+        if sugary and processed:
+            evaluation_summary = "这顿能量密度和加工度都偏高。"
+            biggest_issue = "甜饮/甜品和高加工内容叠在一起，下一顿别再补偿性乱收。"
+        elif sugary:
+            evaluation_summary = "这顿最需要注意的是糖和液体热量。"
+            biggest_issue = "如果这是正餐，再叠甜饮或甜品会让下一顿更难判断。"
+        elif not protein:
+            evaluation_summary = "这顿的核心短板是蛋白不够明确。"
+            biggest_issue = "如果这一顿蛋白偏少，下一顿更容易靠嘴馋来补。"
+        elif processed:
+            evaluation_summary = "这顿有点偏加工食品导向。"
+            biggest_issue = "加工度偏高时，饱腹感和后续决策通常都更差。"
+        else:
+            evaluation_summary = "这顿整体还算稳。"
+            biggest_issue = "没有明显爆点，但也别因此把下一顿放飞。"
+
+        if protein:
+            positive_note = "至少蛋白来源是明确的。"
+        elif vegetable:
+            positive_note = "至少有一些蔬菜或低能量密度内容。"
+
+        next_meal_suggestion = "下一顿优先把蛋白和蔬菜补齐，主食正常吃，不要因为这一顿有波动就故意不吃。"
+        if sugary and protein:
+            next_meal_suggestion = "下一顿清一点就够，先补蛋白和蔬菜，别再叠甜饮或甜品，也别补偿性挨饿。"
+        elif sugary:
+            next_meal_suggestion = "下一顿优先稳定血糖波动：蛋白正常、蔬菜优先、主食正常吃，不要再叠甜饮。"
+        elif not protein:
+            next_meal_suggestion = "下一顿最重要的是把蛋白补明确，再决定主食和加餐，不要靠零食补回来。"
+        elif processed:
+            next_meal_suggestion = "下一顿尽量回到低加工一点的组合：明确蛋白、正常主食、少包装零食。"
+
+        if late_night_recent >= 2:
+            next_meal_suggestion += " 最近晚间进食偏多，今晚尽量提前把份量边界定好。"
+        if dessert_like_recent >= 3:
+            next_meal_suggestion += " 最近 7 天甜口/饮料频率偏高，下一顿别再用“奖励自己”当理由。"
+        if adherence_summary["not_followed"] >= 2:
+            next_meal_suggestion += " 这次先做最小可执行版本，不要一口气把标准拉太满。"
+        if baseline_keys.intersection({"high_uric_acid", "high_urea"}):
+            next_meal_suggestion += " 结合你的基线，下一顿尽量别走重口、高嘌呤、过激进补偿路线。"
+        if "high_total_cholesterol" in baseline_keys:
+            next_meal_suggestion += " 也要顺手把脂肪来源收干净一点。"
+        if "high_waist_hip_ratio" in baseline_keys:
+            next_meal_suggestion += " 重点还是稳住结构和晚间边界，不是靠下一顿极端补救。"
+        if "low_diastolic_blood_pressure" in baseline_keys:
+            next_meal_suggestion += " 不要把下一顿省掉，也不要用过度限制来纠错。"
+        if recent_metrics and (recent_metrics[0].get("readiness_score") or 0) < 70:
+            next_meal_suggestion += " 今天恢复一般，下一顿更应该求稳，不要一边累一边硬控。"
+        if recent_metrics and (
+            (recent_metrics[0].get("active_calories") or 0) >= 300
+            or (recent_metrics[0].get("steps") or 0) >= 8000
+        ):
+            next_meal_suggestion += " 今天已经有一定活动量，下一顿别再走过度限制式补偿。"
+        if len(today_foods) >= 3:
+            next_meal_suggestion += " 今天已经吃了不少次，下一顿更要简短清楚，不要再加散碎加餐。"
+
+        evaluation_text = f"{evaluation_summary} 最大问题是：{biggest_issue}"
+        if positive_note:
+            evaluation_text += f" 但也有一个优点：{positive_note}"
+
+        feedback = MealFeedbackResponse(
+            logged_at=datetime.fromisoformat(logged_at),
+            meal_slot=meal_slot,
+            evaluation_summary=evaluation_summary,
+            biggest_issue=biggest_issue,
+            positive_note=positive_note,
+            evaluation_text=evaluation_text,
+            next_meal_suggestion=next_meal_suggestion,
+        )
+        self.storage.save_meal_feedback(
+            conversation_event_id=conversation_event_id,
+            food_log_id=food_log_id,
+            logged_at=logged_at,
+            meal_slot=meal_slot,
+            evaluation_summary=evaluation_summary,
+            biggest_issue=biggest_issue,
+            positive_note=positive_note,
+            evaluation_text=evaluation_text,
+            next_meal_suggestion=next_meal_suggestion,
+        )
+        return feedback
+
+    def _evaluate_weight_anomaly(
+        self,
+        weight_log_id: int,
+        weight_kg: float,
+        logged_at: str,
+    ) -> WeightAnomalyReviewResponse:
+        target_date = date.fromisoformat(logged_at[:10])
+        previous_morning_weights = self.storage.list_recent_weight_logs(
+            limit=3,
+            measurement_context="morning",
+            before_logged_at=logged_at,
+        )
+        reference_weight = self._build_weight_reference(previous_morning_weights, logged_at)
+        delta_kg = round(weight_kg - reference_weight, 2) if reference_weight is not None else None
+        is_abnormal = bool(delta_kg is not None and abs(delta_kg) >= 1.0)
+
+        yesterday = target_date - timedelta(days=1)
+        recent_metrics = self.storage.list_recent_metrics(days=3)
+        yesterday_metrics = self.storage.get_oura_daily_metrics(yesterday)
+        yesterday_foods = self.storage.list_food_logs_for_date(yesterday)
+        yesterday_hunger = self.storage.list_hunger_logs_for_date(yesterday)
+        baseline_markers = self.storage.list_health_markers()
+
+        suspected_drivers = self._weight_anomaly_drivers(
+            delta_kg=delta_kg,
+            yesterday_metrics=yesterday_metrics,
+            yesterday_foods=yesterday_foods,
+            yesterday_hunger=yesterday_hunger,
+            baseline_markers=baseline_markers,
+            recent_metrics=recent_metrics,
+        )
+        review_text, recommended_action = self._weight_anomaly_message(
+            weight_kg=weight_kg,
+            reference_weight=reference_weight,
+            delta_kg=delta_kg,
+            is_abnormal=is_abnormal,
+            suspected_drivers=suspected_drivers,
+        )
+
+        return self.storage.save_abnormal_weight_review(
+            target_date=target_date,
+            weight_log_id=weight_log_id,
+            weight_kg=weight_kg,
+            reference_weight_kg=reference_weight,
+            delta_kg=delta_kg,
+            is_abnormal=is_abnormal,
+            suspected_drivers=suspected_drivers,
+            review_text=review_text,
+            recommended_action=recommended_action,
+        )
+
+    def _build_weight_reference(self, previous_morning_weights: list[dict[str, Any]], logged_at: str) -> float | None:
+        if len(previous_morning_weights) >= 3:
+            values = [float(item["weight_kg"]) for item in previous_morning_weights[:3]]
+            return round(sum(values) / len(values), 2)
+        previous_any = self.storage.list_recent_weight_logs(limit=1, before_logged_at=logged_at)
+        if previous_any:
+            return round(float(previous_any[0]["weight_kg"]), 2)
+        return None
+
+    def _weight_anomaly_drivers(
+        self,
+        delta_kg: float | None,
+        yesterday_metrics: dict[str, Any] | None,
+        yesterday_foods: list[dict[str, Any]],
+        yesterday_hunger: list[dict[str, Any]],
+        baseline_markers: list[dict[str, Any]],
+        recent_metrics: list[dict[str, Any]],
+    ) -> list[str]:
+        drivers: list[str] = []
+        baseline_keys = {str(item.get("marker_key") or "") for item in baseline_markers}
+        if delta_kg is not None:
+            if delta_kg >= 1.0:
+                drivers.append("更像短期上浮，先按水分、节奏或前一天结构变化看。")
+            elif delta_kg <= -1.0:
+                drivers.append("更像短期下探，先不要直接当成脂肪变化。")
+        if yesterday_metrics and (yesterday_metrics.get("readiness_score") or 0) < 70:
+            drivers.append("昨天恢复一般，短期体重和食欲都更容易波动。")
+        if not yesterday_foods:
+            drivers.append("昨天饮食记录缺口较大，解释可信度会下降。")
+        if any(item.get("meal_slot") == "late_night" for item in yesterday_foods):
+            drivers.append("昨天有晚间进食，容易带来第二天体重短期波动。")
+        if len(yesterday_hunger) >= 2:
+            drivers.append("昨天强饥饿信号偏多，说明前一天节奏可能已经不稳。")
+        if "low_diastolic_blood_pressure" in baseline_keys:
+            drivers.append("你有低舒张压基线，不适合看到波动就立刻加大限制。")
+        if "high_uric_acid" in baseline_keys:
+            drivers.append("你有高尿酸基线，调整时不要走极端补偿路线。")
+        if recent_metrics and len(recent_metrics) >= 2:
+            latest_steps = recent_metrics[0].get("steps") or 0
+            older_steps = recent_metrics[1].get("steps") or 0
+            if latest_steps and older_steps and abs(latest_steps - older_steps) >= 3000:
+                drivers.append("最近活动量变化不小，体重波动未必只是吃出来的。")
+        return drivers[:4]
+
+    def _weight_anomaly_message(
+        self,
+        weight_kg: float,
+        reference_weight: float | None,
+        delta_kg: float | None,
+        is_abnormal: bool,
+        suspected_drivers: list[str],
+    ) -> tuple[str, str]:
+        if reference_weight is None or delta_kg is None:
+            return (
+                f"今天记录了 {weight_kg:.1f}kg，但参考体重数据还不够，先继续稳定记录。",
+                "先连续记录几天晨起体重，再判断这次变化是不是异常。",
+            )
+        if not is_abnormal:
+            return (
+                f"今天体重 {weight_kg:.1f}kg，和参考值 {reference_weight:.1f}kg 的差异是 {delta_kg:+.1f}kg，暂时不算异常波动。",
+                "先正常记录，按原计划执行，不要因为单日小波动临时加码。",
+            )
+        driver_text = " ".join(suspected_drivers) if suspected_drivers else "先按短期波动处理，不直接下结论。"
+        return (
+            f"今天体重 {weight_kg:.1f}kg，相比参考值 {reference_weight:.1f}kg 变化 {delta_kg:+.1f}kg，已达到异常波动阈值。{driver_text}",
+            "今天先把饮食结构、补水和节奏做稳，不要立刻走补偿性节食或报复性放开吃。",
+        )
 
     def _determine_key_issue(
         self,
@@ -443,3 +751,7 @@ class HealthService:
             if status in summary:
                 summary[status] += 1
         return summary
+
+
+def _contains_any(text: str, keywords: tuple[str, ...]) -> bool:
+    return any(keyword in text for keyword in keywords)

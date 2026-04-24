@@ -11,6 +11,7 @@ from local_health_assistant.models import ExtractedRecord
 MEAL_KEYWORDS = ("早餐", "午餐", "晚餐", "夜宵", "加餐", "吃了", "喝了")
 HUNGER_KEYWORDS = ("很饿", "饿死", "想吃", "嘴馋", "暴食", "控制不住", "好饿", "特别饿")
 ADVICE_KEYWORDS = ("能不能吃", "可以吃", "该不该吃", "今天能不能", "要不要吃")
+MORNING_WEIGHT_KEYWORDS = ("晨起", "早上", "起床", "空腹", "起床后")
 FOLLOWED_ADVICE_KEYWORDS = ("按建议做了", "照做了", "忍住了", "没吃", "控制住了", "就吃了一小份")
 PARTIAL_ADVICE_KEYWORDS = ("吃了一点", "只吃了几口", "小份吃了", "部分做到", "差一点没忍住")
 NOT_FOLLOWED_ADVICE_KEYWORDS = ("还是吃了", "没忍住", "破功了", "吃多了", "失控了", "还是点了")
@@ -40,7 +41,11 @@ def parse_message(text: str, occurred_at: datetime) -> ParseResult:
                 record_type="weight",
                 summary=f"Weight log {weight_kg:.1f}kg",
                 confidence=0.98,
-                payload={"logged_at": occurred_at.isoformat(), "weight_kg": round(weight_kg, 2)},
+                payload={
+                    "logged_at": occurred_at.isoformat(),
+                    "weight_kg": round(weight_kg, 2),
+                    "measurement_context": infer_weight_context(normalized, occurred_at),
+                },
             )
         )
 
@@ -104,3 +109,11 @@ def infer_advice_outcome_status(text: str) -> Literal["followed", "partially_fol
     if any(keyword in text for keyword in FOLLOWED_ADVICE_KEYWORDS):
         return "followed"
     return None
+
+
+def infer_weight_context(text: str, occurred_at: datetime) -> str:
+    if any(keyword in text for keyword in MORNING_WEIGHT_KEYWORDS):
+        return "morning"
+    if occurred_at.hour < 11:
+        return "morning"
+    return "unspecified"

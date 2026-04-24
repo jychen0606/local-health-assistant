@@ -21,6 +21,8 @@ The current output surfaces are:
 - daily insights
 - real-time advice
 - advice outcome calibration
+- abnormal morning weight review
+- post-meal evaluation and next-meal suggestion
 
 ## Current Baseline Markers That Affect Output
 
@@ -34,6 +36,84 @@ The current logic only uses these baseline markers as active constraints:
 - `high_urea`
 
 Other imported markers are stored and available, but they do not yet change coaching output directly.
+
+## Morning Weight Rules
+
+The system now treats a morning weight log as a possible abnormal-weight trigger.
+
+### Trigger
+
+- a weight log with `measurement_context = morning`
+
+### Reference Weight
+
+The system uses:
+
+1. the mean of the previous three morning weights, if available
+2. otherwise the immediately previous weight record
+
+### Abnormality Threshold
+
+- `abs(today_weight - reference_weight) >= 1.0kg`
+
+### Output
+
+The system stores and can return:
+
+- `is_abnormal`
+- `reference_weight_kg`
+- `delta_kg`
+- `suspected_drivers`
+- `review_text`
+- `recommended_action`
+
+If the deviation is below threshold, it still stores a lightweight result, but it does not treat the day as an abnormal-weight event.
+
+### Current Driver Heuristics
+
+The current abnormal-weight review may mention:
+
+- short-term fluctuation rather than immediate fat change
+- yesterday recovery quality
+- yesterday tracking gap
+- late-night eating
+- repeated hunger signals
+- baseline guardrails such as high uric acid or low diastolic blood pressure
+
+## Post-Meal Rules
+
+Food logs now generate an immediate meal feedback response.
+
+### Input Model
+
+The internal system still only consumes text. Images can be preprocessed outside the project and converted into text before being sent in.
+
+### Immediate Output
+
+For each meal log, the system returns:
+
+- `evaluation_summary`
+- `biggest_issue`
+- `positive_note` when available
+- `evaluation_text`
+- `next_meal_suggestion`
+
+### Current Meal Heuristics
+
+The system currently looks for simple cues in the text:
+
+- sugary items and drinks
+- processed or fried food cues
+- explicit protein sources
+- explicit vegetable cues
+
+It combines those with:
+
+- goals
+- baseline constraints
+- recent advice-gap behavior
+- recent seven-day meal pattern
+- recent activity and recovery context
 
 ## Rule Priority
 

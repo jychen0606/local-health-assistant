@@ -14,6 +14,8 @@ This repository now contains:
 - daily review and advice endpoints with rules-first logic
 - manual Oura daily sync for sleep, readiness, and activity summaries
 - automatic morning briefing orchestration for sync + review + insights
+- abnormal morning weight review on ingest
+- post-meal evaluation plus next-meal suggestion
 - explainable personal signal scoring for behavior hypotheses
 - anonymized baseline profile and health marker storage
 - advice outcome capture and execution-gap calibration
@@ -62,6 +64,8 @@ Optional morning briefing scheduler:
 export LHA_MORNING_BRIEFING_ENABLED="true"
 export LHA_MORNING_BRIEFING_HOUR="8"
 export LHA_MORNING_BRIEFING_MINUTE="30"
+export LHA_ACTIVITY_SYNC_ENABLED="true"
+export LHA_ACTIVITY_SYNC_INTERVAL_MINUTES="60"
 ```
 
 ## Oura setup
@@ -128,6 +132,8 @@ When `LHA_MORNING_BRIEFING_ENABLED=true`, the app starts a lightweight local sch
 - generate yesterday's review
 - generate yesterday's insights
 
+When `LHA_ACTIVITY_SYNC_ENABLED=true`, the same local scheduler also polls same-day Oura activity/workout context every configured interval and folds it into local judgment state.
+
 You can also trigger the same flow manually:
 
 ```bash
@@ -145,11 +151,13 @@ curl -X POST http://127.0.0.1:8000/health/jobs/morning \
 - `POST /health/ingest/message`
 - `POST /health/reviews/generate`
 - `GET /health/reviews/{date}`
+- `GET /health/weights/anomaly/{date}`
 - `POST /health/insights/generate`
 - `GET /health/insights/{date}`
 - `POST /health/advice/respond`
 - `POST /health/advice/outcomes`
 - `POST /health/oura/sync`
+- `POST /health/oura/activity-sync`
 - `GET /health/oura/daily/{date}`
 - `POST /health/jobs/morning`
 

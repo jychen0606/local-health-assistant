@@ -10,7 +10,13 @@ from typing import Any, Iterator
 import yaml
 
 from local_health_assistant.config import AppPaths, ensure_app_dirs
-from local_health_assistant.models import AdviceOutcomeResponse, AdviceRequest, GoalPayload, ReviewResponse
+from local_health_assistant.models import (
+    AdviceOutcomeResponse,
+    AdviceRequest,
+    GoalPayload,
+    ReviewResponse,
+    WeightAnomalyReviewResponse,
+)
 
 
 SCHEMA_STATEMENTS = [
@@ -39,6 +45,21 @@ SCHEMA_STATEMENTS = [
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS meal_feedback_records (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        conversation_event_id INTEGER NOT NULL,
+        food_log_id INTEGER NOT NULL,
+        logged_at TEXT NOT NULL,
+        meal_slot TEXT NOT NULL,
+        evaluation_summary TEXT NOT NULL,
+        biggest_issue TEXT NOT NULL,
+        positive_note TEXT,
+        evaluation_text TEXT NOT NULL,
+        next_meal_suggestion TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS hunger_logs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         conversation_event_id INTEGER NOT NULL,
@@ -56,7 +77,22 @@ SCHEMA_STATEMENTS = [
         conversation_event_id INTEGER NOT NULL,
         logged_at TEXT NOT NULL,
         weight_kg REAL NOT NULL,
+        measurement_context TEXT NOT NULL DEFAULT 'unspecified',
         confidence REAL NOT NULL,
+        created_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS abnormal_weight_reviews (
+        date TEXT PRIMARY KEY,
+        weight_log_id INTEGER NOT NULL,
+        weight_kg REAL NOT NULL,
+        reference_weight_kg REAL,
+        delta_kg REAL,
+        is_abnormal INTEGER NOT NULL,
+        suspected_drivers_json TEXT NOT NULL,
+        review_text TEXT NOT NULL,
+        recommended_action TEXT NOT NULL,
         created_at TEXT NOT NULL
     )
     """,
@@ -88,6 +124,29 @@ SCHEMA_STATEMENTS = [
         error_message TEXT,
         started_at TEXT NOT NULL,
         finished_at TEXT
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS oura_activity_sync_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        target_date TEXT NOT NULL,
+        trigger_type TEXT NOT NULL,
+        status TEXT NOT NULL,
+        error_message TEXT,
+        started_at TEXT NOT NULL,
+        finished_at TEXT
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS oura_workouts (
+        workout_key TEXT PRIMARY KEY,
+        day TEXT NOT NULL,
+        start_datetime TEXT,
+        end_datetime TEXT,
+        sport TEXT,
+        active_calories INTEGER,
+        payload_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
     )
     """,
     """
@@ -229,6 +288,13 @@ class Storage:
     def _apply_migrations(self, conn: sqlite3.Connection) -> None:
         self._ensure_columns(
             conn,
+            "weight_logs",
+            {
+                "measurement_context": "TEXT NOT NULL DEFAULT 'unspecified'",
+            },
+        )
+        self._ensure_columns(
+            conn,
             "oura_daily_metrics",
             {
                 "sleep_contributors_json": "TEXT",
@@ -302,21 +368,24 @@ class Storage:
             conn.commit()
             return int(cursor.lastrowid)
 
-    def save_food_log(self, conversation_event_id: int, extracted: dict[str, Any], confidence: float) -> None:
-        self._insert_simple(
-            """
-            INSERT INTO food_logs (conversation_event_id, logged_at, meal_slot, description, confidence, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                conversation_event_id,
-                extracted["logged_at"],
-                extracted["meal_slot"],
-                extracted["description"],
-                confidence,
-                utc_now(),
-            ),
-        )
+    def save_food_log(self, conversation_event_id: int, extracted: dict[str, Any], confidence: float) -> int:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO food_logs (conversation_event_id, logged_at, meal_slot, description, confidence, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    conversation_event_id,
+                    extracted["logged_at"],
+                    extracted["meal_slot"],
+                    extracted["description"],
+                    confidence,
+                    utc_now(),
+                ),
+            )
+            conn.commit()
+            return int(cursor.lastrowid)
 
     def save_hunger_log(self, conversation_event_id: int, extracted: dict[str, Any], confidence: float) -> None:
         self._insert_simple(
@@ -335,20 +404,24 @@ class Storage:
             ),
         )
 
-    def save_weight_log(self, conversation_event_id: int, extracted: dict[str, Any], confidence: float) -> None:
-        self._insert_simple(
-            """
-            INSERT INTO weight_logs (conversation_event_id, logged_at, weight_kg, confidence, created_at)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                conversation_event_id,
-                extracted["logged_at"],
-                extracted["weight_kg"],
-                confidence,
-                utc_now(),
-            ),
-        )
+    def save_weight_log(self, conversation_event_id: int, extracted: dict[str, Any], confidence: float) -> int:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO weight_logs (conversation_event_id, logged_at, weight_kg, measurement_context, confidence, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    conversation_event_id,
+                    extracted["logged_at"],
+                    extracted["weight_kg"],
+                    extracted.get("measurement_context", "unspecified"),
+                    confidence,
+                    utc_now(),
+                ),
+            )
+            conn.commit()
+            return int(cursor.lastrowid)
 
     def start_oura_sync(self, target_date: date, trigger_type: str) -> int:
         with self.connect() as conn:
@@ -374,6 +447,15 @@ class Storage:
 
     def save_oura_snapshot(self, target_date: date, snapshot: dict[str, Any]) -> Path:
         path = self.paths.snapshots_dir / f"{target_date.isoformat()}.json"
+        path.write_text(
+            json.dumps(snapshot, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        return path
+
+    def save_oura_activity_snapshot(self, target_date: date, snapshot: dict[str, Any]) -> Path:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        path = self.paths.snapshots_dir / f"activity-{target_date.isoformat()}-{stamp}.json"
         path.write_text(
             json.dumps(snapshot, ensure_ascii=False, indent=2, sort_keys=True),
             encoding="utf-8",
@@ -435,6 +517,89 @@ class Storage:
                 (target_date.isoformat(),),
             ).fetchone()
         return dict(row) if row else None
+
+    def patch_oura_activity_metrics(
+        self,
+        target_date: date,
+        activity_score: int | None,
+        active_calories: int | None,
+        steps: int | None,
+        activity_contributors: dict[str, Any] | None,
+        snapshot_path: str | None,
+    ) -> None:
+        existing = self.get_oura_daily_metrics(target_date) or {}
+        self.upsert_oura_daily_metrics(
+            {
+                "date": target_date.isoformat(),
+                "sleep_score": existing.get("sleep_score"),
+                "total_sleep_minutes": existing.get("total_sleep_minutes"),
+                "sleep_efficiency": existing.get("sleep_efficiency"),
+                "readiness_score": existing.get("readiness_score"),
+                "resting_heart_rate": existing.get("resting_heart_rate"),
+                "hrv_balance": existing.get("hrv_balance"),
+                "activity_score": activity_score,
+                "active_calories": active_calories,
+                "steps": steps,
+                "sleep_contributors": _json_load(existing.get("sleep_contributors_json")),
+                "readiness_contributors": _json_load(existing.get("readiness_contributors_json")),
+                "activity_contributors": activity_contributors,
+                "snapshot_path": snapshot_path or existing.get("snapshot_path"),
+            }
+        )
+
+    def start_oura_activity_sync(self, target_date: date, trigger_type: str) -> int:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO oura_activity_sync_runs (target_date, trigger_type, status, started_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (target_date.isoformat(), trigger_type, "started", utc_now()),
+            )
+            conn.commit()
+            return int(cursor.lastrowid)
+
+    def finish_oura_activity_sync(self, run_id: int, status: str, error_message: str | None = None) -> None:
+        self._insert_simple(
+            """
+            UPDATE oura_activity_sync_runs
+            SET status = ?, error_message = ?, finished_at = ?
+            WHERE id = ?
+            """,
+            (status, error_message, utc_now(), run_id),
+        )
+
+    def save_workouts(self, workouts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        inserted: list[dict[str, Any]] = []
+        with self.connect() as conn:
+            for workout in workouts:
+                exists = conn.execute(
+                    "SELECT workout_key FROM oura_workouts WHERE workout_key = ?",
+                    (workout["workout_key"],),
+                ).fetchone()
+                if exists:
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO oura_workouts (
+                        workout_key, day, start_datetime, end_datetime, sport,
+                        active_calories, payload_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        workout["workout_key"],
+                        workout["day"],
+                        workout.get("start_datetime"),
+                        workout.get("end_datetime"),
+                        workout.get("sport"),
+                        workout.get("active_calories"),
+                        json.dumps(workout.get("payload") or {}, ensure_ascii=False),
+                        utc_now(),
+                    ),
+                )
+                inserted.append(workout)
+            conn.commit()
+        return inserted
 
     def record_advice(self, conversation_event_id: int | None, request: AdviceRequest, advice_text: str, expected_behavior: str, context_payload: dict[str, Any]) -> int:
         with self.connect() as conn:
@@ -538,6 +703,17 @@ class Storage:
             (f"{prefix}%",),
         )
 
+    def list_food_logs_for_window(self, days: int = 7) -> list[dict[str, Any]]:
+        start = (date.today() - timedelta(days=days)).isoformat()
+        return self._query_many(
+            """
+            SELECT * FROM food_logs
+            WHERE logged_at >= ?
+            ORDER BY logged_at DESC
+            """,
+            (start,),
+        )
+
     def list_hunger_logs_for_window(self, days: int = 3) -> list[dict[str, Any]]:
         start = (date.today() - timedelta(days=days)).isoformat()
         return self._query_many(
@@ -570,6 +746,105 @@ class Storage:
                 """
             ).fetchone()
         return dict(row) if row else None
+
+    def list_recent_weight_logs(
+        self,
+        limit: int = 7,
+        measurement_context: str | None = None,
+        before_logged_at: str | None = None,
+    ) -> list[dict[str, Any]]:
+        sql = """
+            SELECT * FROM weight_logs
+            WHERE 1 = 1
+        """
+        params: list[Any] = []
+        if measurement_context:
+            sql += " AND measurement_context = ?"
+            params.append(measurement_context)
+        if before_logged_at:
+            sql += " AND logged_at < ?"
+            params.append(before_logged_at)
+        sql += " ORDER BY logged_at DESC LIMIT ?"
+        params.append(limit)
+        return self._query_many(sql, tuple(params))
+
+    def save_abnormal_weight_review(
+        self,
+        target_date: date,
+        weight_log_id: int,
+        weight_kg: float,
+        reference_weight_kg: float | None,
+        delta_kg: float | None,
+        is_abnormal: bool,
+        suspected_drivers: list[str],
+        review_text: str,
+        recommended_action: str,
+    ) -> WeightAnomalyReviewResponse:
+        now = utc_now()
+        self._insert_simple(
+            """
+            INSERT INTO abnormal_weight_reviews (
+                date, weight_log_id, weight_kg, reference_weight_kg, delta_kg,
+                is_abnormal, suspected_drivers_json, review_text, recommended_action, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(date) DO UPDATE SET
+                weight_log_id = excluded.weight_log_id,
+                weight_kg = excluded.weight_kg,
+                reference_weight_kg = excluded.reference_weight_kg,
+                delta_kg = excluded.delta_kg,
+                is_abnormal = excluded.is_abnormal,
+                suspected_drivers_json = excluded.suspected_drivers_json,
+                review_text = excluded.review_text,
+                recommended_action = excluded.recommended_action,
+                created_at = excluded.created_at
+            """,
+            (
+                target_date.isoformat(),
+                weight_log_id,
+                weight_kg,
+                reference_weight_kg,
+                delta_kg,
+                1 if is_abnormal else 0,
+                json.dumps(suspected_drivers, ensure_ascii=False),
+                review_text,
+                recommended_action,
+                now,
+            ),
+        )
+        return WeightAnomalyReviewResponse(
+            date=target_date,
+            weight_log_id=weight_log_id,
+            weight_kg=weight_kg,
+            reference_weight_kg=reference_weight_kg,
+            delta_kg=delta_kg,
+            is_abnormal=is_abnormal,
+            suspected_drivers=suspected_drivers,
+            review_text=review_text,
+            recommended_action=recommended_action,
+        )
+
+    def get_abnormal_weight_review(self, target_date: date) -> WeightAnomalyReviewResponse | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM abnormal_weight_reviews
+                WHERE date = ?
+                """,
+                (target_date.isoformat(),),
+            ).fetchone()
+        if not row:
+            return None
+        return WeightAnomalyReviewResponse(
+            date=target_date,
+            weight_log_id=row["weight_log_id"],
+            weight_kg=row["weight_kg"],
+            reference_weight_kg=row["reference_weight_kg"],
+            delta_kg=row["delta_kg"],
+            is_abnormal=bool(row["is_abnormal"]),
+            suspected_drivers=json.loads(row["suspected_drivers_json"]),
+            review_text=row["review_text"],
+            recommended_action=row["recommended_action"],
+        )
 
     def save_review(self, target_date: date, review_text: str, key_issue: str, recommended_adjustment: str, realism_note: str) -> ReviewResponse:
         markdown_path = self.paths.reviews_dir / f"{target_date.isoformat()}.md"
@@ -606,6 +881,39 @@ class Storage:
             recommended_adjustment=recommended_adjustment,
             realism_note=realism_note,
             markdown_path=str(markdown_path),
+        )
+
+    def save_meal_feedback(
+        self,
+        conversation_event_id: int,
+        food_log_id: int,
+        logged_at: str,
+        meal_slot: str,
+        evaluation_summary: str,
+        biggest_issue: str,
+        positive_note: str | None,
+        evaluation_text: str,
+        next_meal_suggestion: str,
+    ) -> None:
+        self._insert_simple(
+            """
+            INSERT INTO meal_feedback_records (
+                conversation_event_id, food_log_id, logged_at, meal_slot, evaluation_summary,
+                biggest_issue, positive_note, evaluation_text, next_meal_suggestion, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                conversation_event_id,
+                food_log_id,
+                logged_at,
+                meal_slot,
+                evaluation_summary,
+                biggest_issue,
+                positive_note,
+                evaluation_text,
+                next_meal_suggestion,
+                utc_now(),
+            ),
         )
 
     def get_review(self, target_date: date) -> ReviewResponse | None:
@@ -876,3 +1184,14 @@ def _json_or_none(value: Any) -> str | None:
     if value is None:
         return None
     return json.dumps(value, ensure_ascii=False)
+
+
+def _json_load(value: Any) -> Any:
+    if value in (None, ""):
+        return None
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(str(value))
+    except json.JSONDecodeError:
+        return None

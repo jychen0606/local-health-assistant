@@ -45,6 +45,8 @@ class Settings:
     morning_briefing_hour: int
     morning_briefing_minute: int
     morning_briefing_poll_seconds: int
+    activity_sync_enabled: bool
+    activity_sync_interval_minutes: int
     app_paths: AppPaths
 
     @classmethod
@@ -74,6 +76,8 @@ class Settings:
             morning_briefing_hour=_read_int("LHA_MORNING_BRIEFING_HOUR", 8),
             morning_briefing_minute=_read_int("LHA_MORNING_BRIEFING_MINUTE", 30),
             morning_briefing_poll_seconds=_read_int("LHA_MORNING_BRIEFING_POLL_SECONDS", 30),
+            activity_sync_enabled=_read_bool("LHA_ACTIVITY_SYNC_ENABLED", True),
+            activity_sync_interval_minutes=_read_int("LHA_ACTIVITY_SYNC_INTERVAL_MINUTES", 60),
             app_paths=paths,
         )
 

@@ -17,14 +17,19 @@ class MorningBriefingScheduler:
         hour: int,
         minute: int,
         poll_seconds: int = 30,
+        activity_sync_enabled: bool = True,
+        activity_sync_interval_minutes: int = 60,
     ):
         self.service = service
         self.hour = hour
         self.minute = minute
         self.poll_seconds = max(poll_seconds, 5)
+        self.activity_sync_enabled = activity_sync_enabled
+        self.activity_sync_interval_minutes = max(activity_sync_interval_minutes, 15)
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_run_for: date | None = None
+        self._last_activity_sync_slot: tuple[int, int, int, int] | None = None
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -48,4 +53,13 @@ class MorningBriefingScheduler:
                     self._last_run_for = target_date
                 except Exception:
                     logger.exception("Morning briefing run failed for %s", target_date.isoformat())
+            if self.activity_sync_enabled:
+                interval_slot = now.minute // self.activity_sync_interval_minutes
+                slot_key = (now.year, now.month, now.day, interval_slot)
+                if slot_key != self._last_activity_sync_slot:
+                    try:
+                        self.service.run_activity_sync(now.date(), trigger_type="scheduled")
+                        self._last_activity_sync_slot = slot_key
+                    except Exception:
+                        logger.exception("Hourly activity sync failed for %s", now.date().isoformat())
             self._stop_event.wait(self.poll_seconds)
