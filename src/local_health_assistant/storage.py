@@ -10,7 +10,7 @@ from typing import Any, Iterator
 import yaml
 
 from local_health_assistant.config import AppPaths, ensure_app_dirs
-from local_health_assistant.models import AdviceRequest, GoalPayload, ReviewResponse
+from local_health_assistant.models import AdviceOutcomeResponse, AdviceRequest, GoalPayload, ReviewResponse
 
 
 SCHEMA_STATEMENTS = [
@@ -435,6 +435,62 @@ class Storage:
             )
             conn.commit()
             return int(cursor.lastrowid)
+
+    def record_advice_outcome(
+        self,
+        advice_record_id: int,
+        outcome_status: str,
+        outcome_note: str | None = None,
+        evaluation_window_end: str | None = None,
+    ) -> AdviceOutcomeResponse:
+        window_end = evaluation_window_end or utc_now()
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO advice_outcomes (
+                    advice_record_id, evaluation_window_end, outcome_status, outcome_note, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (advice_record_id, window_end, outcome_status, outcome_note, utc_now()),
+            )
+            conn.commit()
+            outcome_id = int(cursor.lastrowid)
+        return AdviceOutcomeResponse(
+            advice_outcome_id=outcome_id,
+            advice_record_id=advice_record_id,
+            outcome_status=outcome_status,
+            outcome_note=outcome_note,
+        )
+
+    def latest_advice_record_for_session(self, session_key: str, lookback_hours: int = 48) -> dict[str, Any] | None:
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=lookback_hours)).isoformat()
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT ar.*
+                FROM advice_records ar
+                JOIN conversation_events ce ON ce.id = ar.conversation_event_id
+                WHERE ce.session_key = ?
+                  AND ar.requested_at >= ?
+                ORDER BY ar.requested_at DESC
+                LIMIT 1
+                """,
+                (session_key, cutoff),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_recent_advice_outcomes(self, days: int = 7) -> list[dict[str, Any]]:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        return self._query_many(
+            """
+            SELECT ao.*, ar.expected_behavior, ar.context_payload_json
+            FROM advice_outcomes ao
+            JOIN advice_records ar ON ar.id = ao.advice_record_id
+            WHERE ao.created_at >= ?
+            ORDER BY ao.created_at DESC
+            """,
+            (cutoff,),
+        )
 
     def list_recent_metrics(self, days: int = 3) -> list[dict[str, Any]]:
         start = (date.today() - timedelta(days=days)).isoformat()

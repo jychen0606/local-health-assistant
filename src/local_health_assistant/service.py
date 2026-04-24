@@ -6,6 +6,8 @@ from typing import Any
 from local_health_assistant.baseline import get_baseline, import_baseline_json
 from local_health_assistant.insights import InsightInputs, generate_daily_insights
 from local_health_assistant.models import (
+    AdviceOutcomeRequest,
+    AdviceOutcomeResponse,
     AdviceRequest,
     AdviceResponse,
     BaselineResponse,
@@ -60,6 +62,15 @@ class HealthService:
                 self.storage.save_hunger_log(event_id, record.payload, record.confidence)
             elif record.record_type == "weight":
                 self.storage.save_weight_log(event_id, record.payload, record.confidence)
+        if parsed.advice_outcome_status:
+            latest_advice = self.storage.latest_advice_record_for_session(request.session_key)
+            if latest_advice:
+                self.storage.record_advice_outcome(
+                    advice_record_id=int(latest_advice["id"]),
+                    outcome_status=parsed.advice_outcome_status,
+                    outcome_note=parsed.advice_outcome_note,
+                    evaluation_window_end=occurred_at.isoformat(),
+                )
         return MessageIngestResponse(
             conversation_event_id=event_id,
             extracted_records=parsed.extracted,
@@ -74,20 +85,25 @@ class HealthService:
         recent_metrics = self.storage.list_recent_metrics(days=3)
         goals = self.storage.load_goals()
         baseline_markers = self.storage.list_health_markers()
+        adherence_summary = self._summarize_recent_adherence()
 
-        key_issue = self._determine_key_issue(foods, recent_hunger, recent_metrics, baseline_markers)
-        recommended_adjustment = self._determine_adjustment(
-            foods, recent_hunger, goals.model_dump(mode="json"), baseline_markers
+        key_issue = self._determine_key_issue(
+            foods, recent_hunger, recent_metrics, baseline_markers, adherence_summary
         )
-        realism_note = self._determine_realism_note(recent_hunger, recent_metrics, baseline_markers)
+        recommended_adjustment = self._determine_adjustment(
+            foods, recent_hunger, goals.model_dump(mode="json"), baseline_markers, adherence_summary
+        )
+        realism_note = self._determine_realism_note(
+            recent_hunger, recent_metrics, baseline_markers, adherence_summary
+        )
 
         review_text = "\n".join(
             [
-                f"# Daily Review - {review_date.isoformat()}",
+                f"# 每日复盘 - {review_date.isoformat()}",
                 "",
-                f"- Yesterday's key issue: {key_issue}",
-                f"- Best adjustment for today: {recommended_adjustment}",
-                f"- Realism check: {realism_note}",
+                f"- 昨天最关键的问题：{key_issue}",
+                f"- 今天最值得调整的一件事：{recommended_adjustment}",
+                f"- 这条建议是否现实：{realism_note}",
                 "",
                 self._weight_context_line(latest_weight),
             ]
@@ -113,6 +129,7 @@ class HealthService:
                 hunger_logs=self.storage.list_hunger_logs_for_date(insight_date),
                 latest_weight=self.storage.latest_weight(),
                 baseline_markers=self.storage.list_health_markers(),
+                adherence_summary=self._summarize_recent_adherence(),
             )
         )
         self.storage.save_daily_insights(
@@ -147,6 +164,7 @@ class HealthService:
         goals = self.storage.load_goals().model_dump(mode="json")
         baseline_markers = self.storage.list_health_markers()
         baseline_keys = {str(item.get("marker_key") or "") for item in baseline_markers}
+        adherence_summary = self._summarize_recent_adherence()
 
         low_recovery = bool(recent_metrics and (recent_metrics[0].get("readiness_score") or 0) < 70)
         frequent_hunger = len(recent_hunger) >= 2
@@ -160,13 +178,24 @@ class HealthService:
             why = "最近恢复或饥饿信号不稳，更容易把一次想吃变成补偿性进食。"
             realistic_alternative = "如果现在就想吃，先定小份量；如果是情绪性嘴馋，先延后 20 分钟再决定。"
 
+        if adherence_summary["not_followed"] >= 2:
+            conclusion = "可以吃，但只建议做你最近能稳定执行的小版本。"
+            why += " 最近几次建议执行落差偏大，当前更重要的是降低方案摩擦，而不是追求更硬。"
+            realistic_alternative = "把选择缩成最小可执行版本，比如提前定份量、只买单份、不要再叠加补偿式运动。"
+
         if latest_weight and goals.get("target_weight_range_kg", {}).get("max") is not None:
             if latest_weight["weight_kg"] > float(goals["target_weight_range_kg"]["max"]):
                 why += " 当前体重也在目标上沿之外，建议优先保住节奏。"
         if "high_uric_acid" in baseline_keys:
             why += " 你有高尿酸基线，后续饮食选择应避免默认走高嘌呤补偿路线。"
+        if "high_urea" in baseline_keys:
+            why += " 你还有尿素偏高记录，当天恢复一般时不适合再走过干、过激进的补偿路线。"
         if "high_total_cholesterol" in baseline_keys:
             why += " 你的基线血脂也提示需要更关注脂肪来源和长期饮食结构。"
+        if "high_waist_hip_ratio" in baseline_keys:
+            why += " 体脂分布也提示要更看重长期稳定和晚间边界，而不是只盯体重数字。"
+        if "low_diastolic_blood_pressure" in baseline_keys:
+            realistic_alternative += " 如果今天状态一般，不要把节食、脱水和高强度训练叠在同一天。"
         if "sinus_bradycardia" in baseline_keys:
             realistic_alternative = (
                 realistic_alternative + " 如果当天恢复一般，也不要把补偿方案和运动量一起拉太高。"
@@ -183,6 +212,7 @@ class HealthService:
                 "recent_hunger_count": len(recent_hunger),
                 "recent_oura_days": len(recent_metrics),
                 "latest_weight": latest_weight,
+                "recent_adherence_summary": adherence_summary,
                 "baseline_marker_keys": sorted(baseline_keys),
             },
         )
@@ -193,6 +223,26 @@ class HealthService:
             realistic_alternative=realistic_alternative,
             advice_text=advice_text,
         )
+
+    def record_advice_outcome(self, request: AdviceOutcomeRequest) -> AdviceOutcomeResponse:
+        return self.storage.record_advice_outcome(
+            advice_record_id=request.advice_record_id,
+            outcome_status=request.outcome_status,
+            outcome_note=request.outcome_note,
+            evaluation_window_end=(request.evaluation_window_end.isoformat() if request.evaluation_window_end else None),
+        )
+
+    def run_morning_briefing(self, target_date: date | None = None) -> dict[str, Any]:
+        briefing_date = target_date or (date.today() - timedelta(days=1))
+        sync_result = self.sync_oura(briefing_date, trigger_type="scheduled")
+        review = self.generate_review(briefing_date)
+        insights = self.generate_insights(briefing_date)
+        return {
+            "target_date": briefing_date.isoformat(),
+            "sync_result": sync_result,
+            "review": review.model_dump(mode="json"),
+            "insights": insights.model_dump(mode="json"),
+        }
 
     def start_oura_oauth(self) -> OuraAuthStartResponse:
         if self.oura_oauth_client is None:
@@ -315,19 +365,24 @@ class HealthService:
         recent_hunger: list[dict[str, Any]],
         recent_metrics: list[dict[str, Any]],
         baseline_markers: list[dict[str, Any]],
+        adherence_summary: dict[str, int],
     ) -> str:
         baseline_keys = {str(item.get("marker_key") or "") for item in baseline_markers}
         if recent_metrics and (recent_metrics[0].get("readiness_score") or 0) < 70:
-            return "Recovery is trending low, so appetite control is likely harder than usual."
+            return "最近恢复偏弱，今天更容易从想吃一点滑到补偿性进食。"
         if len(recent_hunger) >= 2:
-            return "Frequent recent hunger signals suggest your current plan may be too aggressive."
+            return "最近强饥饿信号偏多，说明当前计划对你来说有点太硬。"
+        if adherence_summary["not_followed"] >= 2:
+            return "最近建议执行落差偏多，真正的问题不是懂不懂，而是方案摩擦太大。"
         if "high_uric_acid" in baseline_keys:
-            return "Your baseline uric acid is elevated, so food choices should optimize for adherence without drifting into high-purine compensation."
+            return "你有高尿酸基线，饮食选择要优先避免滑向高嘌呤的补偿路线。"
+        if "high_waist_hip_ratio" in baseline_keys:
+            return "当前更值得盯的是体脂分布和晚间边界，而不是只看体重有没有立刻下降。"
         if "high_total_cholesterol" in baseline_keys:
-            return "Long-term food quality matters here because your baseline cholesterol is already elevated."
+            return "你的基线血脂已经在提醒长期食物质量，而不只是体重波动。"
         if not foods:
-            return "Yesterday has too little logged diet data, so consistency of tracking is the main gap."
-        return "Nothing stands out as a crisis, but eating decisions still need tighter structure."
+            return "昨天记录太少，当前最大的缺口还是缺少足够上下文来判断。"
+        return "没有明显失控点，但吃的结构还可以更稳一点。"
 
     def _determine_adjustment(
         self,
@@ -335,36 +390,56 @@ class HealthService:
         recent_hunger: list[dict[str, Any]],
         goals: dict[str, Any],
         baseline_markers: list[dict[str, Any]],
+        adherence_summary: dict[str, int],
     ) -> str:
         baseline_keys = {str(item.get("marker_key") or "") for item in baseline_markers}
         if len(recent_hunger) >= 2:
-            return "Front-load protein earlier in the day so evening decisions are less reactive."
+            return "把蛋白和正餐重心前置，先降低晚上临时起意的概率。"
+        if adherence_summary["not_followed"] >= 2:
+            return "今天先把计划缩成最小可执行版本，只保留你大概率能做到的那一步。"
         if "high_uric_acid" in baseline_keys:
-            return "Keep meals stable and lower-purine by default instead of relying on rich reward meals later in the day."
+            return "今天尽量走稳定、偏低嘌呤的默认餐次，而不是晚上再靠奖励型进食补回来。"
+        if "high_waist_hip_ratio" in baseline_keys:
+            return "优先收紧晚间加餐边界和餐次稳定性，这比再去追更低的体重数字更重要。"
         if "high_total_cholesterol" in baseline_keys:
-            return "Today’s best adjustment is to reduce processed and high-saturated-fat choices rather than chase short-term restriction."
+            return "今天最值得调整的是减少加工和高饱和脂肪选择，而不是追求更硬的短期限制。"
+        if "low_diastolic_blood_pressure" in baseline_keys:
+            return "今天别把节食、脱水和高强度训练叠在一起，先保住稳定感和恢复。"
         if not foods:
-            return "Log at least your first meal and any hunger spike today to restore a usable data trail."
+            return "今天至少把第一餐和一次明显饥饿记下来，先把可判断的数据补齐。"
         if goals.get("late_night_snack_limit", 0) <= 2:
-            return "Keep late-night eating bounded and pre-decide the portion before you start."
-        return "Repeat the parts of yesterday that were easiest to execute instead of tightening the plan."
+            return "如果晚上想吃，先把份量定死，再开始吃。"
+        return "重复昨天最容易做到的部分，不要额外加码。"
 
     def _determine_realism_note(
         self,
         recent_hunger: list[dict[str, Any]],
         recent_metrics: list[dict[str, Any]],
         baseline_markers: list[dict[str, Any]],
+        adherence_summary: dict[str, int],
     ) -> str:
         baseline_keys = {str(item.get("marker_key") or "") for item in baseline_markers}
         if recent_metrics and (recent_metrics[0].get("readiness_score") or 0) < 70:
-            return "A softer target is more realistic today because low recovery usually reduces restraint."
+            return "现实，因为恢复差的时候本来就更难靠意志力扛住，今天放软一点更像能做到的方案。"
         if len(recent_hunger) >= 2:
-            return "The plan should bias toward controlled flexibility, not a perfect day."
+            return "现实，但前提是不是追求完美，而是接受一个可控的小版本。"
+        if adherence_summary["not_followed"] >= 2:
+            return "现实，但只有在你愿意先做小、先做稳时才现实；继续加码大概率还是做不到。"
         if "sinus_bradycardia" in baseline_keys:
-            return "A conservative pace is more realistic because your baseline favors recovery-aware, not aggressive, day plans."
-        return "The recommendation is realistic if you make the decision before hunger gets strong."
+            return "现实，因为你的基线更适合恢复优先、节奏保守的方案，不适合硬上强度。"
+        if "low_diastolic_blood_pressure" in baseline_keys:
+            return "现实，但要避免空腹太久、脱水或训练拉太猛，不然执行体验会很差。"
+        return "现实，前提是你在很饿之前就把决定做掉。"
 
     def _weight_context_line(self, latest_weight: dict[str, Any] | None) -> str:
         if not latest_weight:
-            return "- Latest weight: no weight log yet."
-        return f"- Latest weight: {latest_weight['weight_kg']:.1f}kg."
+            return "- 最新体重：还没有记录。"
+        return f"- 最新体重：{latest_weight['weight_kg']:.1f}kg。"
+
+    def _summarize_recent_adherence(self, days: int = 7) -> dict[str, int]:
+        summary = {"followed": 0, "partially_followed": 0, "not_followed": 0}
+        for row in self.storage.list_recent_advice_outcomes(days=days):
+            status = str(row.get("outcome_status") or "")
+            if status in summary:
+                summary[status] += 1
+        return summary

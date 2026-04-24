@@ -20,6 +20,7 @@ The current output surfaces are:
 - daily review
 - daily insights
 - real-time advice
+- advice outcome calibration
 
 ## Current Baseline Markers That Affect Output
 
@@ -28,6 +29,9 @@ The current logic only uses these baseline markers as active constraints:
 - `high_uric_acid`
 - `high_total_cholesterol`
 - `sinus_bradycardia`
+- `high_waist_hip_ratio`
+- `low_diastolic_blood_pressure`
+- `high_urea`
 
 Other imported markers are stored and available, but they do not yet change coaching output directly.
 
@@ -39,9 +43,10 @@ In practice, the order is:
 
 1. recent recovery problems
 2. repeated hunger signals
-3. baseline constraints
-4. logging gaps
-5. generic fallback guidance
+3. repeated execution failures
+4. baseline constraints
+5. logging gaps
+6. generic fallback guidance
 
 That means a low-readiness day can override a more generic baseline note, and repeated hunger can override a simple tracking reminder.
 
@@ -59,21 +64,26 @@ The current priority order is:
 
 1. If the most recent Oura `readiness_score` is below `70`, the key issue becomes low recovery.
 2. Else if the recent hunger window has at least `2` hunger signals, the key issue becomes that the current plan is likely too aggressive.
-3. Else if baseline includes `high_uric_acid`, the key issue becomes avoiding drift into high-purine compensation.
-4. Else if baseline includes `high_total_cholesterol`, the key issue becomes long-term food quality.
-5. Else if there are no food logs for the review date, the key issue becomes insufficient tracking.
-6. Else the fallback issue is that eating decisions still need tighter structure.
+3. Else if there are at least `2` recent `not_followed` advice outcomes, the key issue becomes plan friction and execution gap.
+4. Else if baseline includes `high_uric_acid`, the key issue becomes avoiding drift into high-purine compensation.
+5. Else if baseline includes `high_waist_hip_ratio`, the key issue becomes body-composition and late-night-boundary focus.
+6. Else if baseline includes `high_total_cholesterol`, the key issue becomes long-term food quality.
+7. Else if there are no food logs for the review date, the key issue becomes insufficient tracking.
+8. Else the fallback issue is that eating decisions still need tighter structure.
 
 ### Best Adjustment
 
 The current priority order is:
 
 1. If the recent hunger window has at least `2` hunger signals, recommend front-loading protein earlier in the day.
-2. Else if baseline includes `high_uric_acid`, recommend stable lower-purine meals by default.
-3. Else if baseline includes `high_total_cholesterol`, recommend reducing processed and high-saturated-fat choices rather than chasing short-term restriction.
-4. Else if there are no food logs for the review date, recommend restoring a usable data trail by logging meals and hunger.
-5. Else if `late_night_snack_limit <= 2`, recommend bounding late-night eating in advance.
-6. Else repeat the easiest-to-execute parts of the prior day.
+2. Else if there are at least `2` recent `not_followed` advice outcomes, recommend shrinking the plan to the smallest executable version.
+3. Else if baseline includes `high_uric_acid`, recommend stable lower-purine meals by default.
+4. Else if baseline includes `high_waist_hip_ratio`, recommend focusing on late-night boundaries and meal consistency.
+5. Else if baseline includes `high_total_cholesterol`, recommend reducing processed and high-saturated-fat choices rather than chasing short-term restriction.
+6. Else if baseline includes `low_diastolic_blood_pressure`, recommend avoiding hard restriction, dehydration, and intense training on the same day.
+7. Else if there are no food logs for the review date, recommend restoring a usable data trail by logging meals and hunger.
+8. Else if `late_night_snack_limit <= 2`, recommend bounding late-night eating in advance.
+9. Else repeat the easiest-to-execute parts of the prior day.
 
 ### Realism Check
 
@@ -81,8 +91,10 @@ The current priority order is:
 
 1. If the most recent Oura `readiness_score` is below `70`, realism note says the target should be softer.
 2. Else if the recent hunger window has at least `2` hunger signals, realism note says the plan should bias toward controlled flexibility.
-3. Else if baseline includes `sinus_bradycardia`, realism note says the pace should stay conservative and recovery-aware.
-4. Else the fallback note says the recommendation is realistic if the decision happens before hunger gets strong.
+3. Else if there are at least `2` recent `not_followed` advice outcomes, realism note says a smaller version is the only realistic version.
+4. Else if baseline includes `sinus_bradycardia`, realism note says the pace should stay conservative and recovery-aware.
+5. Else if baseline includes `low_diastolic_blood_pressure`, realism note warns against stacking under-eating, dehydration, and intense training.
+6. Else the fallback note says the recommendation is realistic if the decision happens before hunger gets strong.
 
 ## Daily Insights Rules
 
@@ -176,6 +188,43 @@ Purpose:
 
 - keep downstream suggestions attentive to fat quality and processed-food load
 
+### Body Composition Constraint
+
+Label: `体脂分布约束`
+
+Scoring:
+
+- `0.45` if baseline includes `high_waist_hip_ratio`
+
+Purpose:
+
+- bias the system toward stable eating structure and body-composition thinking rather than scale-only thinking
+
+### Low Blood Pressure Constraint
+
+Label: `低血压约束`
+
+Scoring:
+
+- `0.4` if baseline includes `low_diastolic_blood_pressure`
+
+Purpose:
+
+- keep advice from combining hard restriction, dehydration, and aggressive training on weak-recovery days
+
+### Execution Friction
+
+Label: `执行摩擦风险`
+
+Scoring:
+
+- `+0.5` if there are at least `2` recent `not_followed` advice outcomes
+- up to `+0.25` from recent `partially_followed` outcomes
+
+Purpose:
+
+- capture that the plan may be theoretically right but practically too hard to execute right now
+
 ## Real-Time Advice Rules
 
 The advice endpoint starts from a default bounded-permission answer and then tightens it with recent behavior, weight, and baseline constraints.
@@ -213,13 +262,36 @@ If baseline includes `high_uric_acid`:
 
 - append a warning to avoid drifting into a high-purine compensation route
 
+If baseline includes `high_urea`:
+
+- append a warning against overly dry or overly aggressive compensation patterns on weak-recovery days
+
 If baseline includes `high_total_cholesterol`:
 
 - append a warning to pay more attention to fat sources and long-term structure
 
+If baseline includes `high_waist_hip_ratio`:
+
+- append a warning that body-composition and late-night boundaries matter more than chasing a single lower weigh-in
+
+If baseline includes `low_diastolic_blood_pressure`:
+
+- append a more conservative alternative that avoids stacking restriction, dehydration, and hard training
+
 If baseline includes `sinus_bradycardia`:
 
 - append a more conservative alternative that avoids stacking compensation eating and aggressive exercise on the same day
+
+### Advice Gap Calibration
+
+The current system now supports two ways to record advice outcomes:
+
+- explicit API call to `/health/advice/outcomes`
+- automatic heuristic capture when a follow-up message contains phrases like `还是吃了` or `按建议做了`
+
+The current calibration rule is simple:
+
+- if there are at least `2` recent `not_followed` outcomes, the next advice is softened toward the smallest executable version
 
 ### Advice Context Storage
 
@@ -228,6 +300,7 @@ Each advice record currently stores:
 - recent hunger count
 - recent Oura day count
 - latest weight
+- recent adherence summary
 - `baseline_marker_keys`
 
 This is so future calibration can know which baseline constraints were active when advice was generated.
@@ -239,7 +312,6 @@ These are not part of the current rule engine:
 - severity-weighted marker logic
 - per-food purine or fat-source classification
 - time decay for older reports
-- dynamic rule weighting from advice-outcome feedback
 - direct use of most baseline markers in coaching output
 - diagnosis or clinical interpretation
 

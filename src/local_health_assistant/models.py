@@ -73,6 +73,20 @@ class AdviceResponse(BaseModel):
     advice_text: str
 
 
+class AdviceOutcomeRequest(BaseModel):
+    advice_record_id: int
+    outcome_status: Literal["followed", "partially_followed", "not_followed"]
+    outcome_note: str | None = None
+    evaluation_window_end: datetime | None = None
+
+
+class AdviceOutcomeResponse(BaseModel):
+    advice_outcome_id: int
+    advice_record_id: int
+    outcome_status: Literal["followed", "partially_followed", "not_followed"]
+    outcome_note: str | None = None
+
+
 class OuraSyncRequest(BaseModel):
     target_date: date
     trigger_type: Literal["manual", "scheduled"] = "manual"
@@ -151,3 +165,5 @@ class StatusResponse(BaseModel):
     goals_path: str
     reviews_dir: str
     snapshots_dir: str
+    morning_briefing_enabled: bool = False
+    morning_briefing_time: str | None = None

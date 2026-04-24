@@ -41,6 +41,10 @@ class Settings:
     oura_redirect_uri: str | None
     oura_authorize_url: str
     oura_token_url: str
+    morning_briefing_enabled: bool
+    morning_briefing_hour: int
+    morning_briefing_minute: int
+    morning_briefing_poll_seconds: int
     app_paths: AppPaths
 
     @classmethod
@@ -66,6 +70,10 @@ class Settings:
             oura_redirect_uri=_read_env("OURA_REDIRECT_URI"),
             oura_authorize_url=os.getenv("OURA_AUTHORIZE_URL", "https://cloud.ouraring.com/oauth/authorize").rstrip("/"),
             oura_token_url=os.getenv("OURA_TOKEN_URL", "https://api.ouraring.com/oauth/token").rstrip("/"),
+            morning_briefing_enabled=_read_bool("LHA_MORNING_BRIEFING_ENABLED", False),
+            morning_briefing_hour=_read_int("LHA_MORNING_BRIEFING_HOUR", 8),
+            morning_briefing_minute=_read_int("LHA_MORNING_BRIEFING_MINUTE", 30),
+            morning_briefing_poll_seconds=_read_int("LHA_MORNING_BRIEFING_POLL_SECONDS", 30),
             app_paths=paths,
         )
 
@@ -90,3 +98,20 @@ def _read_oura_token() -> str | None:
 def _read_env(name: str) -> str | None:
     value = (os.getenv(name, "") or "").strip()
     return value or None
+
+
+def _read_bool(name: str, default: bool) -> bool:
+    value = (os.getenv(name, "") or "").strip().lower()
+    if not value:
+        return default
+    return value in {"1", "true", "yes", "on"}
+
+
+def _read_int(name: str, default: int) -> int:
+    value = _read_env(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default

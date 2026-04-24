@@ -15,6 +15,7 @@ class InsightInputs:
     hunger_logs: list[dict[str, Any]]
     latest_weight: dict[str, Any] | None
     baseline_markers: list[dict[str, Any]]
+    adherence_summary: dict[str, Any] | None = None
 
 
 def generate_daily_insights(inputs: InsightInputs) -> DailyInsightsResponse:
@@ -25,8 +26,11 @@ def generate_daily_insights(inputs: InsightInputs) -> DailyInsightsResponse:
         score_tracking_gap(features),
         score_late_night_pattern(features),
         score_meal_structure_risk(features),
+        score_execution_friction(features),
         score_urate_constraint(features),
         score_lipid_constraint(features),
+        score_body_composition_constraint(features),
+        score_low_blood_pressure_constraint(features),
     ]
     hypotheses = [item for item in hypotheses if item.score > 0]
     hypotheses.sort(key=lambda item: item.score, reverse=True)
@@ -56,6 +60,9 @@ def build_daily_features(inputs: InsightInputs) -> dict[str, Any]:
         "steps": metrics.get("steps"),
         "latest_weight_kg": inputs.latest_weight.get("weight_kg") if inputs.latest_weight else None,
         "baseline_marker_keys": [str(item.get("marker_key") or "") for item in inputs.baseline_markers],
+        "recent_followed_count": int((inputs.adherence_summary or {}).get("followed", 0)),
+        "recent_partial_count": int((inputs.adherence_summary or {}).get("partially_followed", 0)),
+        "recent_not_followed_count": int((inputs.adherence_summary or {}).get("not_followed", 0)),
     }
 
 
@@ -149,6 +156,26 @@ def score_meal_structure_risk(features: dict[str, Any]) -> HypothesisScore:
     )
 
 
+def score_execution_friction(features: dict[str, Any]) -> HypothesisScore:
+    partial = int(features.get("recent_partial_count") or 0)
+    not_followed = int(features.get("recent_not_followed_count") or 0)
+    score = 0.0
+    evidence: list[str] = []
+    if not_followed >= 2:
+        score += 0.5
+        evidence.append(f"{not_followed} recent advice outcome(s) were not_followed")
+    if partial >= 1:
+        score += min(0.25, partial * 0.1)
+        evidence.append(f"{partial} recent advice outcome(s) were partially_followed")
+    return HypothesisScore(
+        hypothesis_key="execution_friction",
+        score=round(min(score, 1.0), 2),
+        label="执行摩擦风险",
+        evidence=evidence,
+        recommendation="最近执行落差偏多，建议先把计划缩成能稳定做到的小版本。",
+    )
+
+
 def score_urate_constraint(features: dict[str, Any]) -> HypothesisScore:
     marker_keys = set(features.get("baseline_marker_keys") or [])
     if "high_uric_acid" not in marker_keys:
@@ -172,6 +199,32 @@ def score_lipid_constraint(features: dict[str, Any]) -> HypothesisScore:
         label="血脂约束",
         evidence=["baseline includes high_total_cholesterol"],
         recommendation="建议优先关注长期脂肪来源和加工食品负荷，而不是只盯体重波动。",
+    )
+
+
+def score_body_composition_constraint(features: dict[str, Any]) -> HypothesisScore:
+    marker_keys = set(features.get("baseline_marker_keys") or [])
+    if "high_waist_hip_ratio" not in marker_keys:
+        return _zero("body_composition_constraint", "体脂分布约束")
+    return HypothesisScore(
+        hypothesis_key="body_composition_constraint",
+        score=0.45,
+        label="体脂分布约束",
+        evidence=["baseline includes high_waist_hip_ratio"],
+        recommendation="建议优先稳定餐次、晚间进食边界和长期体脂分布，而不是只盯体重数字。",
+    )
+
+
+def score_low_blood_pressure_constraint(features: dict[str, Any]) -> HypothesisScore:
+    marker_keys = set(features.get("baseline_marker_keys") or [])
+    if "low_diastolic_blood_pressure" not in marker_keys:
+        return _zero("low_blood_pressure_constraint", "低血压约束")
+    return HypothesisScore(
+        hypothesis_key="low_blood_pressure_constraint",
+        score=0.4,
+        label="低血压约束",
+        evidence=["baseline includes low_diastolic_blood_pressure"],
+        recommendation="当天恢复一般时不要把热量限制、脱水和高强度训练叠在一起。",
     )
 
 

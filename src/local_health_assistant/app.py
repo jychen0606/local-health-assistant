@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from datetime import date
 
 from fastapi import FastAPI, HTTPException, Query
 
 from local_health_assistant.config import Settings
 from local_health_assistant.models import (
+    AdviceOutcomeRequest,
     AdviceRequest,
     GoalUpdateRequest,
     InsightsGenerateRequest,
@@ -15,6 +17,7 @@ from local_health_assistant.models import (
     StatusResponse,
 )
 from local_health_assistant.oura import OuraClient, OuraOAuthClient
+from local_health_assistant.scheduler import MorningBriefingScheduler
 from local_health_assistant.service import HealthService
 from local_health_assistant.storage import Storage
 
@@ -30,7 +33,26 @@ oura_oauth_client = OuraOAuthClient(
     token_url=settings.oura_token_url,
 )
 service = HealthService(storage, oura_client, oura_oauth_client)
-app = FastAPI(title="Local Health Assistant", version="0.1.0")
+morning_scheduler = MorningBriefingScheduler(
+    service=service,
+    hour=settings.morning_briefing_hour,
+    minute=settings.morning_briefing_minute,
+    poll_seconds=settings.morning_briefing_poll_seconds,
+)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    if settings.morning_briefing_enabled:
+        morning_scheduler.start()
+    try:
+        yield
+    finally:
+        if settings.morning_briefing_enabled:
+            morning_scheduler.stop()
+
+
+app = FastAPI(title="Local Health Assistant", version="0.1.0", lifespan=lifespan)
 
 
 @app.get("/health/status", response_model=StatusResponse)
@@ -42,6 +64,8 @@ def health_status() -> StatusResponse:
         goals_path=str(settings.app_paths.goals_path),
         reviews_dir=str(settings.app_paths.reviews_dir),
         snapshots_dir=str(settings.app_paths.snapshots_dir),
+        morning_briefing_enabled=settings.morning_briefing_enabled,
+        morning_briefing_time=f"{settings.morning_briefing_hour:02d}:{settings.morning_briefing_minute:02d}",
     )
 
 
@@ -137,6 +161,12 @@ def advice_respond(request: AdviceRequest) -> dict[str, object]:
     return result.model_dump(mode="json")
 
 
+@app.post("/health/advice/outcomes")
+def advice_outcomes(request: AdviceOutcomeRequest) -> dict[str, object]:
+    result = service.record_advice_outcome(request)
+    return result.model_dump(mode="json")
+
+
 @app.post("/health/oura/sync")
 def oura_sync(request: OuraSyncRequest) -> dict[str, object]:
     return service.sync_oura(request.target_date, request.trigger_type)
@@ -148,6 +178,11 @@ def get_oura_daily(target_date: date) -> dict[str, object]:
     if not metrics:
         raise HTTPException(status_code=404, detail="Oura metrics not found")
     return {"metrics": metrics}
+
+
+@app.post("/health/jobs/morning")
+def run_morning_briefing(request: ReviewGenerateRequest) -> dict[str, object]:
+    return service.run_morning_briefing(request.target_date)
 
 
 service.import_baseline_report(

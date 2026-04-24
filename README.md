@@ -13,8 +13,10 @@ This repository now contains:
 - message ingest for diet, hunger, and weight logs
 - daily review and advice endpoints with rules-first logic
 - manual Oura daily sync for sleep, readiness, and activity summaries
+- automatic morning briefing orchestration for sync + review + insights
 - explainable personal signal scoring for behavior hypotheses
 - anonymized baseline profile and health marker storage
+- advice outcome capture and execution-gap calibration
 
 The service intentionally does not depend on CodexBridge in version 1. The first useful loop should stay deterministic and local: parse simple facts, store them, compare against goals, generate reviews, and record advice gaps. LLM-backed wording can be added later after the core data loop is stable.
 
@@ -52,6 +54,14 @@ Override the data root if needed:
 
 ```bash
 export LHA_DATA_DIR="/absolute/path/to/data/health"
+```
+
+Optional morning briefing scheduler:
+
+```bash
+export LHA_MORNING_BRIEFING_ENABLED="true"
+export LHA_MORNING_BRIEFING_HOUR="8"
+export LHA_MORNING_BRIEFING_MINUTE="30"
 ```
 
 ## Oura setup
@@ -110,6 +120,22 @@ curl -X POST http://127.0.0.1:8000/health/oura/sync \
 
 The service stores the raw Oura response at `data/health/oura_snapshots/YYYY-MM-DD.json` and upserts normalized metrics into SQLite.
 
+## Morning briefing
+
+When `LHA_MORNING_BRIEFING_ENABLED=true`, the app starts a lightweight local scheduler in-process. At the configured time it will:
+
+- sync Oura for yesterday
+- generate yesterday's review
+- generate yesterday's insights
+
+You can also trigger the same flow manually:
+
+```bash
+curl -X POST http://127.0.0.1:8000/health/jobs/morning \
+  -H "Content-Type: application/json" \
+  -d '{"target_date": "2026-04-23"}'
+```
+
 ## Initial API surface
 
 - `GET /health/status`
@@ -122,8 +148,10 @@ The service stores the raw Oura response at `data/health/oura_snapshots/YYYY-MM-
 - `POST /health/insights/generate`
 - `GET /health/insights/{date}`
 - `POST /health/advice/respond`
+- `POST /health/advice/outcomes`
 - `POST /health/oura/sync`
 - `GET /health/oura/daily/{date}`
+- `POST /health/jobs/morning`
 
 ## Example ingest request
 
