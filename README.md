@@ -21,6 +21,7 @@ The service intentionally does not depend on CodexBridge in version 1. The first
 ## Repository layout
 
 - `docs/specs/2026-04-11-local-health-assistant-design.md`
+- `docs/rules.md`
 - `src/local_health_assistant/`
 - `pyproject.toml`
 
