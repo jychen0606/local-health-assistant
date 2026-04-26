@@ -13,9 +13,12 @@ from local_health_assistant.models import (
     BaselineResponse,
     DailyInsightsResponse,
     GeneratedFeedback,
+    GoalPayload,
     MealFeedbackResponse,
     MessageIngestRequest,
     MessageIngestResponse,
+    OnboardingProfile,
+    OnboardingResponse,
     OuraAuthStartResponse,
     OuraCallbackResponse,
     ReviewResponse,
@@ -153,6 +156,37 @@ class HealthService:
     def get_baseline(self) -> BaselineResponse:
         return get_baseline(self.storage)
 
+    def get_onboarding(self) -> OnboardingResponse:
+        stored = self.storage.get_onboarding_profile()
+        if stored:
+            profile = OnboardingProfile.model_validate(stored)
+            goals, notes = self._derive_goals_from_profile(profile)
+            return OnboardingResponse(profile=profile, goals=goals, derived_notes=notes)
+        goals = self.storage.load_goals()
+        midpoint = (goals.target_weight_range_kg["min"] + goals.target_weight_range_kg["max"]) / 2
+        profile = OnboardingProfile(
+            current_weight_kg=round(midpoint, 1),
+            target_weight_kg=round(midpoint, 1),
+            primary_activities=[],
+            weekly_activity_sessions=goals.weekly_training_target,
+            average_session_minutes=None,
+            dietary_preferences=None,
+        )
+        return OnboardingResponse(
+            profile=profile,
+            goals=goals,
+            derived_notes=[
+                "还没有保存基础信息，当前显示由已有 goals 反推的默认值。",
+                "保存后系统会根据基础信息重新推导内部目标。",
+            ],
+        )
+
+    def save_onboarding(self, profile: OnboardingProfile) -> OnboardingResponse:
+        goals, notes = self._derive_goals_from_profile(profile)
+        self.storage.save_onboarding_profile(profile.model_dump(mode="json"))
+        saved_goals = self.storage.save_goals(goals, source_version="onboarding")
+        return OnboardingResponse(profile=profile, goals=saved_goals, derived_notes=notes)
+
     def generate_insights(self, target_date: date | None = None) -> DailyInsightsResponse:
         insight_date = target_date or (date.today() - timedelta(days=1))
         result = generate_daily_insights(
@@ -181,6 +215,63 @@ class HealthService:
 
     def get_abnormal_weight_review(self, target_date: date) -> WeightAnomalyReviewResponse | None:
         return self.storage.get_abnormal_weight_review(target_date)
+
+    def _derive_goals_from_profile(self, profile: OnboardingProfile) -> tuple[GoalPayload, list[str]]:
+        target_weight = round(profile.target_weight_kg, 1)
+        tolerance = max(0.8, round(target_weight * 0.015, 1))
+        target_min = round(target_weight - tolerance, 1)
+        target_max = round(target_weight + tolerance, 1)
+        current_weight = profile.current_weight_kg
+        weight_delta = current_weight - target_weight
+        phase = "maintenance"
+        if weight_delta > 1.0:
+            phase = "fat_loss"
+        elif weight_delta < -1.0:
+            phase = "muscle_gain"
+
+        protein_factor = 1.6 if phase == "fat_loss" else 1.4
+        if any(activity in profile.primary_activities for activity in ("strength", "boxing", "tennis")):
+            protein_factor += 0.1
+        protein_min = int(round(current_weight * protein_factor / 5) * 5)
+
+        estimated_bmr = current_weight * 22
+        activity_minutes = (profile.average_session_minutes or 45) * profile.weekly_activity_sessions
+        activity_factor = 1.25
+        if activity_minutes >= 240:
+            activity_factor = 1.45
+        elif activity_minutes >= 120:
+            activity_factor = 1.35
+        maintenance = int(round(estimated_bmr * activity_factor / 50) * 50)
+        if phase == "fat_loss":
+            calorie_min = max(1200, maintenance - 450)
+            calorie_max = max(calorie_min + 150, maintenance - 200)
+        elif phase == "muscle_gain":
+            calorie_min = maintenance + 100
+            calorie_max = maintenance + 300
+        else:
+            calorie_min = maintenance - 150
+            calorie_max = maintenance + 150
+
+        late_night_limit = 2
+        preferences = (profile.dietary_preferences or "").lower()
+        if "夜宵" in preferences or "late" in preferences or "snack" in preferences:
+            late_night_limit = 1
+
+        goals = GoalPayload(
+            current_phase=phase,
+            target_weight_range_kg={"min": target_min, "max": target_max},
+            protein_min_g=protein_min,
+            calorie_range={"min": int(calorie_min), "max": int(calorie_max)},
+            weekly_training_target=profile.weekly_activity_sessions,
+            late_night_snack_limit=late_night_limit,
+        )
+        notes = [
+            f"目标体重按 {target_weight:.1f}kg 自动生成 {target_min:.1f}-{target_max:.1f}kg 的观察区间。",
+            f"蛋白下限按当前体重和活动结构估算为 {protein_min}g，不需要手填。",
+            f"热量区间按体重、目标方向和每周活动量粗估为 {calorie_min}-{calorie_max} kcal。",
+            f"训练目标保留为每周 {profile.weekly_activity_sessions} 次，用来描述可执行频率，不代表所有运动强度等价。",
+        ]
+        return goals, notes
 
     def respond_to_advice(self, request: AdviceRequest) -> AdviceResponse:
         occurred_at = request.requested_at or datetime.now(timezone.utc)

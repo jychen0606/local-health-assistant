@@ -159,6 +159,13 @@ SCHEMA_STATEMENTS = [
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS onboarding_profile (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        payload_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS advice_records (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         conversation_event_id INTEGER,
@@ -343,6 +350,32 @@ class Storage:
             )
             conn.commit()
         return goals
+
+    def save_onboarding_profile(self, profile: dict[str, Any]) -> dict[str, Any]:
+        self._insert_simple(
+            """
+            INSERT INTO onboarding_profile (id, payload_json, updated_at)
+            VALUES (1, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                payload_json = excluded.payload_json,
+                updated_at = excluded.updated_at
+            """,
+            (json.dumps(profile, ensure_ascii=False), utc_now()),
+        )
+        return profile
+
+    def get_onboarding_profile(self) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT payload_json FROM onboarding_profile
+                WHERE id = 1
+                """
+            ).fetchone()
+        if not row:
+            return None
+        loaded = json.loads(row["payload_json"])
+        return loaded if isinstance(loaded, dict) else None
 
     def create_conversation_event(self, payload: dict[str, Any]) -> int:
         now = utc_now()

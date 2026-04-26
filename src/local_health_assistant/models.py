@@ -19,6 +19,26 @@ class GoalUpdateRequest(BaseModel):
     goals: GoalPayload
 
 
+class OnboardingProfile(BaseModel):
+    current_weight_kg: float = Field(..., gt=20, lt=250)
+    target_weight_kg: float = Field(..., gt=20, lt=250)
+    height_cm: float | None = Field(default=None, gt=100, lt=250)
+    primary_activities: list[str] = Field(default_factory=list)
+    weekly_activity_sessions: int = Field(default=3, ge=0, le=14)
+    average_session_minutes: int | None = Field(default=None, ge=0, le=300)
+    dietary_preferences: str | None = None
+
+
+class OnboardingUpdateRequest(BaseModel):
+    profile: OnboardingProfile
+
+
+class OnboardingResponse(BaseModel):
+    profile: OnboardingProfile
+    goals: GoalPayload
+    derived_notes: list[str] = Field(default_factory=list)
+
+
 class MessageIngestRequest(BaseModel):
     source_channel: str = Field(..., examples=["telegram"])
     source_user_id: str

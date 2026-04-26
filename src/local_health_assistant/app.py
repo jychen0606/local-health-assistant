@@ -13,6 +13,7 @@ from local_health_assistant.models import (
     GoalUpdateRequest,
     InsightsGenerateRequest,
     MessageIngestRequest,
+    OnboardingUpdateRequest,
     OuraSyncRequest,
     ReviewGenerateRequest,
     StatusResponse,
@@ -317,48 +318,46 @@ INDEX_HTML = """\
 
     <div class="layout">
       <section>
-        <h2>基本目标</h2>
+        <h2>基础信息</h2>
         <form id="goals-form">
           <div class="grid">
             <label>
-              当前阶段
-              <select id="current_phase" name="current_phase">
-                <option value="fat_loss">减脂</option>
-                <option value="maintenance">维持</option>
-                <option value="muscle_gain">增肌</option>
+              当前体重 kg
+              <input id="current_weight_kg" name="current_weight_kg" type="number" min="20" max="250" step="0.1" />
+            </label>
+            <label>
+              目标体重 kg
+              <input id="target_weight_kg" name="target_weight_kg" type="number" min="20" max="250" step="0.1" />
+            </label>
+            <label>
+              身高 cm
+              <input id="height_cm" name="height_cm" type="number" min="100" max="250" step="0.1" />
+            </label>
+            <label>
+              每周运动次数
+              <input id="weekly_activity_sessions" name="weekly_activity_sessions" type="number" min="0" max="14" step="1" />
+            </label>
+            <label>
+              每次大约分钟
+              <input id="average_session_minutes" name="average_session_minutes" type="number" min="0" max="300" step="5" />
+            </label>
+            <label>
+              主要运动
+              <select id="primary_activities" name="primary_activities" multiple size="5">
+                <option value="tennis">网球</option>
+                <option value="boxing">拳击</option>
+                <option value="cardio">有氧</option>
+                <option value="strength">力量</option>
+                <option value="walking">散步</option>
               </select>
             </label>
-            <label>
-              每周训练目标
-              <input id="weekly_training_target" name="weekly_training_target" type="number" min="0" max="14" step="1" />
-            </label>
-            <label>
-              目标体重下限 kg
-              <input id="target_weight_min" name="target_weight_min" type="number" min="20" max="250" step="0.1" />
-            </label>
-            <label>
-              目标体重上限 kg
-              <input id="target_weight_max" name="target_weight_max" type="number" min="20" max="250" step="0.1" />
-            </label>
-            <label>
-              蛋白下限 g
-              <input id="protein_min_g" name="protein_min_g" type="number" min="0" max="400" step="1" />
-            </label>
-            <label>
-              晚间加餐上限
-              <input id="late_night_snack_limit" name="late_night_snack_limit" type="number" min="0" max="14" step="1" />
-            </label>
-            <label>
-              热量下限
-              <input id="calorie_min" name="calorie_min" type="number" min="0" max="10000" step="10" />
-            </label>
-            <label>
-              热量上限
-              <input id="calorie_max" name="calorie_max" type="number" min="0" max="10000" step="10" />
-            </label>
           </div>
+          <label>
+            饮食限制或偏好
+            <textarea id="dietary_preferences" name="dietary_preferences" placeholder="例如：晚上容易想吃甜食；不太吃牛肉；想减少夜宵。"></textarea>
+          </label>
           <div class="form-actions">
-            <button class="primary" type="submit" id="save-goals">保存目标</button>
+            <button class="primary" type="submit" id="save-goals">保存基础信息</button>
             <button type="button" id="reload-goals">重新读取</button>
             <span class="status-line" id="goals-status"></span>
           </div>
@@ -366,6 +365,7 @@ INDEX_HTML = """\
         <div class="meta">
           <div class="pill-row" id="goal-pills"></div>
         </div>
+        <div class="output" id="derived-output">等待推导。</div>
       </section>
 
       <section>
@@ -387,19 +387,19 @@ INDEX_HTML = """\
 
   <script>
     const fields = {
-      current_phase: document.querySelector("#current_phase"),
-      weekly_training_target: document.querySelector("#weekly_training_target"),
-      target_weight_min: document.querySelector("#target_weight_min"),
-      target_weight_max: document.querySelector("#target_weight_max"),
-      protein_min_g: document.querySelector("#protein_min_g"),
-      late_night_snack_limit: document.querySelector("#late_night_snack_limit"),
-      calorie_min: document.querySelector("#calorie_min"),
-      calorie_max: document.querySelector("#calorie_max")
+      current_weight_kg: document.querySelector("#current_weight_kg"),
+      target_weight_kg: document.querySelector("#target_weight_kg"),
+      height_cm: document.querySelector("#height_cm"),
+      weekly_activity_sessions: document.querySelector("#weekly_activity_sessions"),
+      average_session_minutes: document.querySelector("#average_session_minutes"),
+      primary_activities: document.querySelector("#primary_activities"),
+      dietary_preferences: document.querySelector("#dietary_preferences")
     };
 
     const goalsStatus = document.querySelector("#goals-status");
     const logStatus = document.querySelector("#log-status");
     const logOutput = document.querySelector("#log-output");
+    const derivedOutput = document.querySelector("#derived-output");
     const goalPills = document.querySelector("#goal-pills");
     const saveGoalsButton = document.querySelector("#save-goals");
     const sendLogButton = document.querySelector("#send-log");
@@ -421,22 +421,45 @@ INDEX_HTML = """\
       return Math.round(numberValue(id));
     }
 
-    function renderGoals(goals) {
-      fields.current_phase.value = goals.current_phase || "fat_loss";
-      fields.weekly_training_target.value = goals.weekly_training_target ?? "";
-      fields.target_weight_min.value = goals.target_weight_range_kg?.min ?? "";
-      fields.target_weight_max.value = goals.target_weight_range_kg?.max ?? "";
-      fields.protein_min_g.value = goals.protein_min_g ?? "";
-      fields.late_night_snack_limit.value = goals.late_night_snack_limit ?? "";
-      fields.calorie_min.value = goals.calorie_range?.min ?? "";
-      fields.calorie_max.value = goals.calorie_range?.max ?? "";
+    function optionalNumberValue(id) {
+      const raw = fields[id].value.trim();
+      if (!raw) return null;
+      const value = Number(raw);
+      if (!Number.isFinite(value)) {
+        throw new Error("请填写有效数字。");
+      }
+      return value;
+    }
+
+    function selectedActivities() {
+      return Array.from(fields.primary_activities.selectedOptions).map((item) => item.value);
+    }
+
+    function setSelectedActivities(values) {
+      const selected = new Set(values || []);
+      Array.from(fields.primary_activities.options).forEach((option) => {
+        option.selected = selected.has(option.value);
+      });
+    }
+
+    function renderOnboarding(payload) {
+      const profile = payload.profile || {};
+      const goals = payload.goals || {};
+      fields.current_weight_kg.value = profile.current_weight_kg ?? "";
+      fields.target_weight_kg.value = profile.target_weight_kg ?? "";
+      fields.height_cm.value = profile.height_cm ?? "";
+      fields.weekly_activity_sessions.value = profile.weekly_activity_sessions ?? "";
+      fields.average_session_minutes.value = profile.average_session_minutes ?? "";
+      fields.dietary_preferences.value = profile.dietary_preferences ?? "";
+      setSelectedActivities(profile.primary_activities || []);
 
       goalPills.innerHTML = "";
       [
-        `${goals.current_phase}`,
-        `${goals.target_weight_range_kg?.min ?? "-"}-${goals.target_weight_range_kg?.max ?? "-"}kg`,
+        `阶段 ${goals.current_phase ?? "-"}`,
+        `目标区间 ${goals.target_weight_range_kg?.min ?? "-"}-${goals.target_weight_range_kg?.max ?? "-"}kg`,
         `蛋白 ${goals.protein_min_g ?? "-"}g`,
-        `训练 ${goals.weekly_training_target ?? "-"}次/周`,
+        `热量 ${goals.calorie_range?.min ?? "-"}-${goals.calorie_range?.max ?? "-"}`,
+        `运动 ${goals.weekly_training_target ?? "-"}次/周`,
         `夜宵 <= ${goals.late_night_snack_limit ?? "-"}`
       ].forEach((text) => {
         const pill = document.createElement("span");
@@ -444,33 +467,33 @@ INDEX_HTML = """\
         pill.textContent = text;
         goalPills.appendChild(pill);
       });
+
+      const notes = payload.derived_notes || [];
+      derivedOutput.textContent = notes.length ? notes.map((note) => `- ${note}`).join("\\n") : "暂无推导说明。";
     }
 
     async function loadGoals() {
       setStatus(goalsStatus, "读取中...");
-      const response = await fetch("/health/goals");
+      const response = await fetch("/health/onboarding");
       if (!response.ok) {
         throw new Error(`读取失败：${response.status}`);
       }
       const payload = await response.json();
-      renderGoals(payload.goals);
+      renderOnboarding(payload);
       setStatus(goalsStatus, "已读取");
     }
 
-    function collectGoals() {
+    function collectProfile() {
+      const averageMinutes = optionalNumberValue("average_session_minutes");
+      const height = optionalNumberValue("height_cm");
       return {
-        current_phase: fields.current_phase.value,
-        target_weight_range_kg: {
-          min: numberValue("target_weight_min"),
-          max: numberValue("target_weight_max")
-        },
-        protein_min_g: integerValue("protein_min_g"),
-        calorie_range: {
-          min: integerValue("calorie_min"),
-          max: integerValue("calorie_max")
-        },
-        weekly_training_target: integerValue("weekly_training_target"),
-        late_night_snack_limit: integerValue("late_night_snack_limit")
+        current_weight_kg: numberValue("current_weight_kg"),
+        target_weight_kg: numberValue("target_weight_kg"),
+        height_cm: height,
+        primary_activities: selectedActivities(),
+        weekly_activity_sessions: integerValue("weekly_activity_sessions"),
+        average_session_minutes: averageMinutes === null ? null : Math.round(averageMinutes),
+        dietary_preferences: fields.dietary_preferences.value.trim() || null
       };
     }
 
@@ -479,24 +502,18 @@ INDEX_HTML = """\
       try {
         saveGoalsButton.disabled = true;
         setStatus(goalsStatus, "保存中...");
-        const goals = collectGoals();
-        if (goals.target_weight_range_kg.min > goals.target_weight_range_kg.max) {
-          throw new Error("目标体重下限不能大于上限。");
-        }
-        if (goals.calorie_range.min > goals.calorie_range.max) {
-          throw new Error("热量下限不能大于上限。");
-        }
-        const response = await fetch("/health/goals", {
+        const profile = collectProfile();
+        const response = await fetch("/health/onboarding", {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ goals })
+          body: JSON.stringify({ profile })
         });
         if (!response.ok) {
           const text = await response.text();
           throw new Error(text || `保存失败：${response.status}`);
         }
         const payload = await response.json();
-        renderGoals(payload.goals);
+        renderOnboarding(payload);
         setStatus(goalsStatus, "已保存");
       } catch (error) {
         setStatus(goalsStatus, error.message || "保存失败", true);
@@ -595,6 +612,16 @@ def health_status() -> StatusResponse:
 @app.get("/health/goals")
 def get_goals() -> dict[str, object]:
     return {"goals": storage.load_goals().model_dump(mode="json")}
+
+
+@app.get("/health/onboarding")
+def get_onboarding() -> dict[str, object]:
+    return service.get_onboarding().model_dump(mode="json")
+
+
+@app.put("/health/onboarding")
+def put_onboarding(request: OnboardingUpdateRequest) -> dict[str, object]:
+    return service.save_onboarding(request.profile).model_dump(mode="json")
 
 
 @app.get("/health/baseline")
