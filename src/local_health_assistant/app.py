@@ -214,6 +214,34 @@ INDEX_HTML = """\
       outline: none;
     }
 
+    .check-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .check-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 42px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfa;
+      padding: 0 10px;
+      color: var(--ink);
+      font-size: 14px;
+      font-weight: 650;
+    }
+
+    .check-item input {
+      width: 16px;
+      min-height: 16px;
+      height: 16px;
+      margin: 0;
+      accent-color: var(--accent);
+    }
+
     textarea {
       min-height: 128px;
       resize: vertical;
@@ -288,7 +316,8 @@ INDEX_HTML = """\
 
       header,
       .layout,
-      .grid {
+      .grid,
+      .check-grid {
         grid-template-columns: 1fr;
       }
 
@@ -343,13 +372,13 @@ INDEX_HTML = """\
             </label>
             <label>
               主要运动
-              <select id="primary_activities" name="primary_activities" multiple size="5">
-                <option value="tennis">网球</option>
-                <option value="boxing">拳击</option>
-                <option value="cardio">有氧</option>
-                <option value="strength">力量</option>
-                <option value="walking">散步</option>
-              </select>
+              <span class="check-grid" id="primary_activities">
+                <span class="check-item"><input type="checkbox" value="tennis" />网球</span>
+                <span class="check-item"><input type="checkbox" value="boxing" />拳击</span>
+                <span class="check-item"><input type="checkbox" value="cardio" />有氧</span>
+                <span class="check-item"><input type="checkbox" value="strength" />力量</span>
+                <span class="check-item"><input type="checkbox" value="walking" />散步</span>
+              </span>
             </label>
           </div>
           <label>
@@ -432,13 +461,13 @@ INDEX_HTML = """\
     }
 
     function selectedActivities() {
-      return Array.from(fields.primary_activities.selectedOptions).map((item) => item.value);
+      return Array.from(fields.primary_activities.querySelectorAll("input:checked")).map((item) => item.value);
     }
 
     function setSelectedActivities(values) {
       const selected = new Set(values || []);
-      Array.from(fields.primary_activities.options).forEach((option) => {
-        option.selected = selected.has(option.value);
+      Array.from(fields.primary_activities.querySelectorAll("input")).forEach((option) => {
+        option.checked = selected.has(option.value);
       });
     }
 
