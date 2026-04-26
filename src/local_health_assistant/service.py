@@ -271,6 +271,15 @@ class HealthService:
             f"热量区间按体重、目标方向和每周活动量粗估为 {calorie_min}-{calorie_max} kcal。",
             f"训练目标保留为每周 {profile.weekly_activity_sessions} 次，用来描述可执行频率，不代表所有运动强度等价。",
         ]
+        baseline_keys = {str(item.get("marker_key") or "") for item in self.storage.list_health_markers()}
+        if "high_uric_acid" in baseline_keys:
+            notes.append("已读到尿酸偏高基线，饮食建议会避免默认高嘌呤和极端补偿路线。")
+        if "high_total_cholesterol" in baseline_keys:
+            notes.append("已读到总胆固醇偏高基线，后续建议会更关注脂肪来源和加工食品负担。")
+        if "high_waist_hip_ratio" in baseline_keys:
+            notes.append("已读到腰臀比偏高基线，策略会更重视体脂分布、餐次稳定和晚间边界。")
+        if "low_diastolic_blood_pressure" in baseline_keys or "sinus_bradycardia" in baseline_keys:
+            notes.append("已读到恢复/循环相关基线，系统会避免把节食、脱水和高强度训练叠在同一天。")
         return goals, notes
 
     def respond_to_advice(self, request: AdviceRequest) -> AdviceResponse:

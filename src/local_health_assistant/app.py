@@ -411,6 +411,19 @@ INDEX_HTML = """\
         </form>
         <div class="output" id="log-output">等待输入。</div>
       </section>
+
+      <section>
+        <h2>健康基线</h2>
+        <div class="form-actions">
+          <button class="primary" type="button" id="import-baseline">导入样例报告</button>
+          <button type="button" id="reload-baseline">重新读取</button>
+          <span class="status-line" id="baseline-status"></span>
+        </div>
+        <div class="meta">
+          <div class="pill-row" id="baseline-pills"></div>
+        </div>
+        <div class="output" id="baseline-output">等待读取。</div>
+      </section>
     </div>
   </main>
 
@@ -427,11 +440,15 @@ INDEX_HTML = """\
 
     const goalsStatus = document.querySelector("#goals-status");
     const logStatus = document.querySelector("#log-status");
+    const baselineStatus = document.querySelector("#baseline-status");
     const logOutput = document.querySelector("#log-output");
     const derivedOutput = document.querySelector("#derived-output");
+    const baselineOutput = document.querySelector("#baseline-output");
     const goalPills = document.querySelector("#goal-pills");
+    const baselinePills = document.querySelector("#baseline-pills");
     const saveGoalsButton = document.querySelector("#save-goals");
     const sendLogButton = document.querySelector("#send-log");
+    const importBaselineButton = document.querySelector("#import-baseline");
 
     function setStatus(node, text, isError = false) {
       node.textContent = text;
@@ -570,6 +587,75 @@ INDEX_HTML = """\
       return lines.join("\\n");
     }
 
+    function renderBaseline(payload) {
+      const profile = payload.profile || {};
+      const markers = payload.markers || [];
+      const reports = payload.reports || [];
+      baselinePills.innerHTML = "";
+      [
+        profile.height_cm ? `身高 ${profile.height_cm}cm` : "身高 -",
+        profile.weight_kg ? `报告体重 ${profile.weight_kg}kg` : "报告体重 -",
+        profile.bmi ? `BMI ${profile.bmi}` : "BMI -",
+        `异常指标 ${markers.length}`,
+        `报告 ${reports.length}`
+      ].forEach((text) => {
+        const pill = document.createElement("span");
+        pill.className = "pill";
+        pill.textContent = text;
+        baselinePills.appendChild(pill);
+      });
+
+      const lines = [];
+      if (reports.length) {
+        lines.push(`最近报告：${reports[0].report_date} / ${reports[0].source_type}`);
+      } else {
+        lines.push("还没有导入健康基线。");
+      }
+      if (markers.length) {
+        lines.push("");
+        lines.push("已识别的异常指标：");
+        markers.slice(0, 8).forEach((marker) => {
+          const unit = marker.unit ? ` ${marker.unit}` : "";
+          lines.push(`- ${marker.label}: ${marker.value}${unit} (${marker.severity})`);
+        });
+        if (markers.length > 8) {
+          lines.push(`- 还有 ${markers.length - 8} 项未展开`);
+        }
+      }
+      baselineOutput.textContent = lines.join("\\n");
+    }
+
+    async function loadBaseline() {
+      setStatus(baselineStatus, "读取中...");
+      const response = await fetch("/health/baseline");
+      if (!response.ok) {
+        throw new Error(`读取失败：${response.status}`);
+      }
+      const payload = await response.json();
+      renderBaseline(payload);
+      setStatus(baselineStatus, "已读取");
+    }
+
+    async function importBaseline() {
+      try {
+        importBaselineButton.disabled = true;
+        setStatus(baselineStatus, "导入中...");
+        const response = await fetch("/health/baseline/import-example", { method: "POST" });
+        if (!response.ok) {
+          const text = await response.text();
+          throw new Error(text || `导入失败：${response.status}`);
+        }
+        const payload = await response.json();
+        renderBaseline(payload);
+        setStatus(baselineStatus, "已导入");
+        await loadGoals();
+      } catch (error) {
+        setStatus(baselineStatus, error.message || "导入失败", true);
+      } finally {
+        importBaselineButton.disabled = false;
+      }
+    }
+
     async function sendLog(event) {
       event.preventDefault();
       const text = document.querySelector("#log-text").value.trim();
@@ -609,8 +695,13 @@ INDEX_HTML = """\
     document.querySelector("#reload-goals").addEventListener("click", () => {
       loadGoals().catch((error) => setStatus(goalsStatus, error.message || "读取失败", true));
     });
+    document.querySelector("#import-baseline").addEventListener("click", importBaseline);
+    document.querySelector("#reload-baseline").addEventListener("click", () => {
+      loadBaseline().catch((error) => setStatus(baselineStatus, error.message || "读取失败", true));
+    });
     document.querySelector("#log-form").addEventListener("submit", sendLog);
     loadGoals().catch((error) => setStatus(goalsStatus, error.message || "读取失败", true));
+    loadBaseline().catch((error) => setStatus(baselineStatus, error.message || "读取失败", true));
   </script>
 </body>
 </html>
@@ -656,6 +747,14 @@ def put_onboarding(request: OnboardingUpdateRequest) -> dict[str, object]:
 @app.get("/health/baseline")
 def get_baseline() -> dict[str, object]:
     return service.get_baseline().model_dump(mode="json")
+
+
+@app.post("/health/baseline/import-example")
+def import_example_baseline() -> dict[str, object]:
+    result = service.import_baseline_report(
+        str(settings.app_paths.repo_root / "docs" / "examples" / "baseline-2026-01-24.json")
+    )
+    return result.model_dump(mode="json")
 
 
 @app.get("/auth/oura/login")
