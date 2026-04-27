@@ -44,6 +44,7 @@ SUGARY_KEYWORDS = ("可乐", "奶茶", "果汁", "甜点", "蛋糕", "冰淇淋"
 PROCESSED_KEYWORDS = ("炸", "薯条", "汉堡", "香肠", "火腿", "饼干", "零食", "泡面", "加工")
 PROTEIN_KEYWORDS = ("鸡", "蛋", "牛肉", "鱼", "虾", "豆腐", "酸奶", "牛奶", "羊肉", "猪肉")
 VEGETABLE_KEYWORDS = ("菜", "西兰花", "沙拉", "番茄", "黄瓜", "青菜", "胡萝卜", "蔬菜")
+STUCK_SYNC_MINUTES = 30
 
 
 class HealthService:
@@ -192,6 +193,7 @@ class HealthService:
         return OnboardingResponse(profile=profile, goals=saved_goals, derived_notes=notes)
 
     def get_context(self) -> HealthContextResponse:
+        self._mark_stale_oura_runs_failed()
         onboarding_payload = self.storage.get_onboarding_profile()
         onboarding_profile = (
             OnboardingProfile.model_validate(onboarding_payload)
@@ -588,6 +590,7 @@ class HealthService:
         )
 
     def sync_oura(self, target_date: date, trigger_type: str) -> dict[str, Any]:
+        self._mark_stale_oura_runs_failed()
         run_id = self.storage.start_oura_sync(target_date, trigger_type)
         effective_client = self._oura_client_with_stored_token()
         if effective_client is None:
@@ -619,6 +622,7 @@ class HealthService:
 
     def run_activity_sync(self, target_date: date | None = None, trigger_type: str = "scheduled") -> dict[str, Any]:
         sync_date = target_date or date.today()
+        self._mark_stale_oura_runs_failed()
         run_id = self.storage.start_oura_activity_sync(sync_date, trigger_type)
         effective_client = self._oura_client_with_stored_token()
         if effective_client is None:
@@ -655,6 +659,7 @@ class HealthService:
             "active_calories": context.get("active_calories"),
             "steps": context.get("steps"),
             "new_workout_count": len(new_workouts),
+            "warnings": snapshot.get("warnings") or [],
         }
 
     def _oura_client_with_stored_token(self) -> OuraClient | None:
@@ -666,6 +671,12 @@ class HealthService:
                 self.oura_client.base_url if self.oura_client else "https://api.ouraring.com",
             )
         return self.oura_client
+
+    def _mark_stale_oura_runs_failed(self) -> None:
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=STUCK_SYNC_MINUTES)).isoformat()
+        message = f"Marked stale after {STUCK_SYNC_MINUTES} minutes without finish."
+        self.storage.fail_stale_oura_sync_runs(cutoff, message)
+        self.storage.fail_stale_oura_activity_sync_runs(cutoff, message)
 
     def _refresh_oura_token_if_needed(self, token_row: dict[str, Any]) -> dict[str, Any]:
         if not is_token_expired(token_row.get("expires_at")):
@@ -1036,14 +1047,33 @@ def _date_or_none(value: Any) -> date | None:
 def _sync_summary(row: dict[str, Any] | None) -> dict[str, Any] | None:
     if not row:
         return None
+    effective_status = str(row.get("status") or "")
+    stuck = _is_stuck_sync(row)
+    if stuck:
+        effective_status = "stuck"
     return {
         "target_date": row.get("target_date"),
         "trigger_type": row.get("trigger_type"),
         "status": row.get("status"),
+        "effective_status": effective_status,
+        "stuck": stuck,
         "error_message": row.get("error_message"),
         "started_at": row.get("started_at"),
         "finished_at": row.get("finished_at"),
     }
+
+
+def _is_stuck_sync(row: dict[str, Any]) -> bool:
+    if row.get("status") != "started":
+        return False
+    try:
+        started_at = datetime.fromisoformat(str(row.get("started_at")))
+    except (TypeError, ValueError):
+        return False
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+    age = datetime.now(timezone.utc) - started_at.astimezone(timezone.utc)
+    return age >= timedelta(minutes=STUCK_SYNC_MINUTES)
 
 
 def _metric_summary(row: dict[str, Any]) -> dict[str, Any]:

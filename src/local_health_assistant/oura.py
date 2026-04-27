@@ -38,6 +38,14 @@ def _ssl_context() -> ssl.SSLContext:
     return ssl.create_default_context()
 
 
+def _parse_problem(error: Exception) -> dict[str, Any] | None:
+    try:
+        parsed = json.loads(str(error))
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 @dataclass(frozen=True)
 class OuraClient:
     access_token: str | None
@@ -67,10 +75,26 @@ class OuraClient:
             )
         start_date = target_date.isoformat()
         end_date = (target_date + timedelta(days=1)).isoformat()
+        warnings: list[dict[str, Any]] = []
+        workout: dict[str, Any] = {"data": []}
+        try:
+            workout = self._get_collection("workout", start_date, end_date)
+        except OuraAPIError as e:
+            problem = _parse_problem(e)
+            if not problem or problem.get("status") != 401:
+                raise
+            warnings.append(
+                {
+                    "collection": "workout",
+                    "status": 401,
+                    "detail": "Token is not authorized for workout scope; daily activity still synced.",
+                }
+            )
         return {
             "target_date": start_date,
             "daily_activity": self._get_collection("daily_activity", start_date, end_date),
-            "workout": self._get_collection("workout", start_date, end_date),
+            "workout": workout,
+            "warnings": warnings,
         }
 
     def _get_collection(self, collection: str, start_date: str, end_date: str) -> dict[str, Any]:

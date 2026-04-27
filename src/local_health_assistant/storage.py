@@ -489,6 +489,22 @@ class Storage:
             ).fetchone()
         return dict(row) if row else None
 
+    def fail_stale_oura_sync_runs(self, stale_before: str, error_message: str) -> int:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE oura_sync_runs
+                SET status = 'failed',
+                    error_message = ?,
+                    finished_at = ?
+                WHERE status = 'started'
+                  AND started_at < ?
+                """,
+                (error_message, utc_now(), stale_before),
+            )
+            conn.commit()
+            return int(cursor.rowcount)
+
     def save_oura_snapshot(self, target_date: date, snapshot: dict[str, Any]) -> Path:
         path = self.paths.snapshots_dir / f"{target_date.isoformat()}.json"
         path.write_text(
@@ -623,6 +639,22 @@ class Storage:
                 """
             ).fetchone()
         return dict(row) if row else None
+
+    def fail_stale_oura_activity_sync_runs(self, stale_before: str, error_message: str) -> int:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE oura_activity_sync_runs
+                SET status = 'failed',
+                    error_message = ?,
+                    finished_at = ?
+                WHERE status = 'started'
+                  AND started_at < ?
+                """,
+                (error_message, utc_now(), stale_before),
+            )
+            conn.commit()
+            return int(cursor.rowcount)
 
     def save_workouts(self, workouts: list[dict[str, Any]]) -> list[dict[str, Any]]:
         inserted: list[dict[str, Any]] = []
