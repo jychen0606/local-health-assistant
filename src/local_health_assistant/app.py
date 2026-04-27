@@ -749,6 +749,11 @@ def get_baseline() -> dict[str, object]:
     return service.get_baseline().model_dump(mode="json")
 
 
+@app.get("/health/context")
+def get_context() -> dict[str, object]:
+    return service.get_context().model_dump(mode="json")
+
+
 @app.post("/health/baseline/import-example")
 def import_example_baseline() -> dict[str, object]:
     result = service.import_baseline_report(

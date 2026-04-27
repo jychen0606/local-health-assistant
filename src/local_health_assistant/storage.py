@@ -478,6 +478,17 @@ class Storage:
             (status, error_message, utc_now(), run_id),
         )
 
+    def latest_oura_sync_run(self) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM oura_sync_runs
+                ORDER BY started_at DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        return dict(row) if row else None
+
     def save_oura_snapshot(self, target_date: date, snapshot: dict[str, Any]) -> Path:
         path = self.paths.snapshots_dir / f"{target_date.isoformat()}.json"
         path.write_text(
@@ -601,6 +612,17 @@ class Storage:
             """,
             (status, error_message, utc_now(), run_id),
         )
+
+    def latest_oura_activity_sync_run(self) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM oura_activity_sync_runs
+                ORDER BY started_at DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        return dict(row) if row else None
 
     def save_workouts(self, workouts: list[dict[str, Any]]) -> list[dict[str, Any]]:
         inserted: list[dict[str, Any]] = []

@@ -39,6 +39,44 @@ class OnboardingResponse(BaseModel):
     derived_notes: list[str] = Field(default_factory=list)
 
 
+class HealthContextKnown(BaseModel):
+    onboarding_profile: bool
+    baseline_report: bool
+    oura_token: bool
+    latest_oura_sync_date: date | None = None
+    latest_activity_sync_date: date | None = None
+    recent_food_logs: int
+    recent_weight_logs: int
+    recent_hunger_logs: int
+    recent_oura_days: int
+    recent_advice_outcomes: int
+
+
+class HealthContextOuraStatus(BaseModel):
+    token_present: bool
+    latest_daily_sync: dict[str, Any] | None = None
+    latest_activity_sync: dict[str, Any] | None = None
+    recent_metrics: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class HealthContextStrategy(BaseModel):
+    phase: str
+    target_weight_kg: float | None = None
+    target_observation_range_kg: list[float]
+    nutrition_strategy: str
+    activity_strategy: str
+    risk_constraints: list[str] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)
+
+
+class HealthContextResponse(BaseModel):
+    known: HealthContextKnown
+    current_strategy: HealthContextStrategy
+    oura_status: HealthContextOuraStatus
+    missing: list[str] = Field(default_factory=list)
+    next_question: str
+
+
 class MessageIngestRequest(BaseModel):
     source_channel: str = Field(..., examples=["telegram"])
     source_user_id: str

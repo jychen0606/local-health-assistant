@@ -14,6 +14,10 @@ from local_health_assistant.models import (
     DailyInsightsResponse,
     GeneratedFeedback,
     GoalPayload,
+    HealthContextKnown,
+    HealthContextOuraStatus,
+    HealthContextResponse,
+    HealthContextStrategy,
     MealFeedbackResponse,
     MessageIngestRequest,
     MessageIngestResponse,
@@ -187,6 +191,70 @@ class HealthService:
         saved_goals = self.storage.save_goals(goals, source_version="onboarding")
         return OnboardingResponse(profile=profile, goals=saved_goals, derived_notes=notes)
 
+    def get_context(self) -> HealthContextResponse:
+        onboarding_payload = self.storage.get_onboarding_profile()
+        onboarding_profile = (
+            OnboardingProfile.model_validate(onboarding_payload)
+            if onboarding_payload
+            else None
+        )
+        goals = self.storage.load_goals()
+        goal_payload = goals.model_dump(mode="json")
+        baseline_reports = self.storage.list_baseline_reports()
+        baseline_markers = self.storage.list_health_markers()
+        baseline_keys = sorted({str(item.get("marker_key") or "") for item in baseline_markers if item.get("marker_key")})
+        recent_foods = self.storage.list_food_logs_for_window(days=7)
+        recent_weights = self.storage.list_recent_weight_logs(limit=7)
+        recent_hunger = self.storage.list_hunger_logs_for_window(days=7)
+        recent_metrics = self.storage.list_recent_metrics(days=7)
+        recent_outcomes = self.storage.list_recent_advice_outcomes(days=7)
+        latest_daily_sync = self.storage.latest_oura_sync_run()
+        latest_activity_sync = self.storage.latest_oura_activity_sync_run()
+        oura_token = self.storage.get_oauth_token("oura")
+
+        known = HealthContextKnown(
+            onboarding_profile=onboarding_profile is not None,
+            baseline_report=bool(baseline_reports),
+            oura_token=bool(oura_token and oura_token.get("access_token")),
+            latest_oura_sync_date=_date_or_none(latest_daily_sync.get("target_date") if latest_daily_sync else None),
+            latest_activity_sync_date=_date_or_none(
+                latest_activity_sync.get("target_date") if latest_activity_sync else None
+            ),
+            recent_food_logs=len(recent_foods),
+            recent_weight_logs=len(recent_weights),
+            recent_hunger_logs=len(recent_hunger),
+            recent_oura_days=len(recent_metrics),
+            recent_advice_outcomes=len(recent_outcomes),
+        )
+        strategy = self._build_context_strategy(
+            goals=goal_payload,
+            onboarding_profile=onboarding_profile,
+            baseline_keys=baseline_keys,
+            recent_metrics=recent_metrics,
+            recent_hunger=recent_hunger,
+            recent_foods=recent_foods,
+        )
+        missing = self._build_context_missing(
+            known=known,
+            recent_weights=recent_weights,
+            recent_foods=recent_foods,
+            recent_hunger=recent_hunger,
+            recent_outcomes=recent_outcomes,
+        )
+        next_question = self._build_context_next_question(missing, baseline_keys, recent_hunger, recent_foods)
+        return HealthContextResponse(
+            known=known,
+            current_strategy=strategy,
+            oura_status=HealthContextOuraStatus(
+                token_present=known.oura_token,
+                latest_daily_sync=_sync_summary(latest_daily_sync),
+                latest_activity_sync=_sync_summary(latest_activity_sync),
+                recent_metrics=[_metric_summary(item) for item in recent_metrics],
+            ),
+            missing=missing,
+            next_question=next_question,
+        )
+
     def generate_insights(self, target_date: date | None = None) -> DailyInsightsResponse:
         insight_date = target_date or (date.today() - timedelta(days=1))
         result = generate_daily_insights(
@@ -281,6 +349,105 @@ class HealthService:
         if "low_diastolic_blood_pressure" in baseline_keys or "sinus_bradycardia" in baseline_keys:
             notes.append("已读到恢复/循环相关基线，系统会避免把节食、脱水和高强度训练叠在同一天。")
         return goals, notes
+
+    def _build_context_strategy(
+        self,
+        goals: dict[str, Any],
+        onboarding_profile: OnboardingProfile | None,
+        baseline_keys: list[str],
+        recent_metrics: list[dict[str, Any]],
+        recent_hunger: list[dict[str, Any]],
+        recent_foods: list[dict[str, Any]],
+    ) -> HealthContextStrategy:
+        target_range = goals.get("target_weight_range_kg") or {}
+        target_min = float(target_range["min"]) if target_range.get("min") is not None else None
+        target_max = float(target_range["max"]) if target_range.get("max") is not None else None
+        target_weight = onboarding_profile.target_weight_kg if onboarding_profile else None
+        if target_weight is None and target_min is not None and target_max is not None:
+            target_weight = round((target_min + target_max) / 2, 1)
+        risk_constraints = [key for key in baseline_keys if key in {
+            "high_uric_acid",
+            "high_total_cholesterol",
+            "high_waist_hip_ratio",
+            "low_diastolic_blood_pressure",
+            "sinus_bradycardia",
+            "high_urea",
+        }]
+        nutrition_strategy = "优先稳定餐次结构，避免把单次波动升级成极端限制或补偿性进食。"
+        if "high_uric_acid" in risk_constraints:
+            nutrition_strategy = "优先稳定餐次结构，避免默认高嘌呤和极端补偿路线。"
+        if "high_total_cholesterol" in risk_constraints:
+            nutrition_strategy += " 同时关注脂肪来源和加工食品负担。"
+        activity_strategy = "把运动当作补充和恢复的上下文，不把运动量当作放开吃或过度限制的理由。"
+        if recent_metrics and (recent_metrics[0].get("readiness_score") or 0) < 70:
+            activity_strategy += " 最近恢复偏弱时，建议会更保守。"
+        evidence = [
+            f"最近 7 天食物记录 {len(recent_foods)} 条",
+            f"最近 7 天饥饿/想吃信号 {len(recent_hunger)} 条",
+            f"最近 Oura 指标 {len(recent_metrics)} 天",
+        ]
+        if risk_constraints:
+            evidence.append("已读取健康基线约束：" + ", ".join(risk_constraints))
+        return HealthContextStrategy(
+            phase=str(goals.get("current_phase") or "unknown"),
+            target_weight_kg=target_weight,
+            target_observation_range_kg=[
+                round(target_min, 1) if target_min is not None else 0.0,
+                round(target_max, 1) if target_max is not None else 0.0,
+            ],
+            nutrition_strategy=nutrition_strategy,
+            activity_strategy=activity_strategy,
+            risk_constraints=risk_constraints,
+            evidence=evidence,
+        )
+
+    def _build_context_missing(
+        self,
+        known: HealthContextKnown,
+        recent_weights: list[dict[str, Any]],
+        recent_foods: list[dict[str, Any]],
+        recent_hunger: list[dict[str, Any]],
+        recent_outcomes: list[dict[str, Any]],
+    ) -> list[str]:
+        missing: list[str] = []
+        if not known.onboarding_profile:
+            missing.append("保存基础信息：当前体重、目标体重、身高和运动结构")
+        if not known.baseline_report:
+            missing.append("导入健康基线报告，用来约束饮食和恢复建议")
+        if not known.oura_token:
+            missing.append("确认 Oura 授权或明确暂时不使用 Oura")
+        if len(recent_weights) < 3:
+            missing.append("至少 3 条最近晨起体重记录")
+        if len(recent_foods) < 6:
+            missing.append("更多完整餐食记录，尤其是晚餐、饮料、甜食和夜宵")
+        if not recent_hunger:
+            missing.append("记录一次明显饥饿或想吃东西的场景")
+        if not recent_outcomes:
+            missing.append("记录一次建议是否做到，用来校准建议难度")
+        return missing
+
+    def _build_context_next_question(
+        self,
+        missing: list[str],
+        baseline_keys: list[str],
+        recent_hunger: list[dict[str, Any]],
+        recent_foods: list[dict[str, Any]],
+    ) -> str:
+        if any("基础信息" in item for item in missing):
+            return "你现在的当前体重、目标体重、身高和每周主要运动大概是什么？"
+        if any("晨起体重" in item for item in missing):
+            return "明早方便记录一次起床后体重吗？连续几天后我才能判断趋势。"
+        if any("餐食记录" in item for item in missing):
+            return "下一餐可以用“早餐/午餐/晚餐：吃了什么”这种轻格式发我吗？"
+        if any("饥饿" in item for item in missing):
+            return "下次明显想吃东西时，告诉我发生在饭后多久、是真的饿还是嘴馋。"
+        if "high_uric_acid" in baseline_keys:
+            return "你运动后最常想补充的是正餐、甜食、饮料，还是高蛋白/肉类？"
+        if any(item.get("meal_slot") == "late_night" for item in recent_foods):
+            return "夜间想吃东西通常是在晚餐后多久出现？"
+        if len(recent_hunger) >= 2:
+            return "最近这些想吃东西的时刻，更像没吃够、运动后需要补充，还是情绪性想吃？"
+        return "今天如果有运动，结束后告诉我运动类型、时长和饥饿程度。"
 
     def respond_to_advice(self, request: AdviceRequest) -> AdviceResponse:
         occurred_at = request.requested_at or datetime.now(timezone.utc)
@@ -855,3 +1022,36 @@ class HealthService:
 
 def _contains_any(text: str, keywords: tuple[str, ...]) -> bool:
     return any(keyword in text for keyword in keywords)
+
+
+def _date_or_none(value: Any) -> date | None:
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
+
+
+def _sync_summary(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not row:
+        return None
+    return {
+        "target_date": row.get("target_date"),
+        "trigger_type": row.get("trigger_type"),
+        "status": row.get("status"),
+        "error_message": row.get("error_message"),
+        "started_at": row.get("started_at"),
+        "finished_at": row.get("finished_at"),
+    }
+
+
+def _metric_summary(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "date": row.get("date"),
+        "sleep_score": row.get("sleep_score"),
+        "readiness_score": row.get("readiness_score"),
+        "activity_score": row.get("activity_score"),
+        "active_calories": row.get("active_calories"),
+        "steps": row.get("steps"),
+    }
