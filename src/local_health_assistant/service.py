@@ -122,35 +122,69 @@ class HealthService:
     def generate_review(self, target_date: date | None = None) -> ReviewResponse:
         review_date = target_date or (date.today() - timedelta(days=1))
         foods = self.storage.list_food_logs_for_date(review_date)
-        recent_hunger = self.storage.list_hunger_logs_for_window(days=3)
+        hunger = self.storage.list_hunger_logs_for_date(review_date)
         latest_weight = self.storage.latest_weight()
-        recent_metrics = self.storage.list_recent_metrics(days=3)
-        goals = self.storage.load_goals()
+        metrics = self.storage.get_oura_daily_metrics(review_date) or {}
+        context = self.get_context()
         baseline_markers = self.storage.list_health_markers()
-        adherence_summary = self._summarize_recent_adherence()
+        score_summary = self._build_review_score_summary(
+            review_date=review_date,
+            metrics=metrics,
+            latest_weight=latest_weight,
+            foods=foods,
+            hunger=hunger,
+        )
+        reason_review = self._build_review_reasons(
+            metrics=metrics,
+            foods=foods,
+            hunger=hunger,
+            context=context,
+            baseline_markers=baseline_markers,
+        )
+        today_suggestion = self._build_review_suggestions(
+            metrics=metrics,
+            foods=foods,
+            hunger=hunger,
+            context=context,
+            baseline_markers=baseline_markers,
+        )
+        missing_info = self._build_review_missing_info(context=context, foods=foods, hunger=hunger, metrics=metrics)
+        question_for_user = self._review_question_for_user(context=context, missing_info=missing_info)
 
-        key_issue = self._determine_key_issue(
-            foods, recent_hunger, recent_metrics, baseline_markers, adherence_summary
-        )
-        recommended_adjustment = self._determine_adjustment(
-            foods, recent_hunger, goals.model_dump(mode="json"), baseline_markers, adherence_summary
-        )
-        realism_note = self._determine_realism_note(
-            recent_hunger, recent_metrics, baseline_markers, adherence_summary
-        )
+        key_issue = reason_review[0] if reason_review else "昨天数据还不够完整，先不要过度解读。"
+        recommended_adjustment = today_suggestion[0] if today_suggestion else "今天先稳定记录和正常吃饭。"
+        realism_note = "现实，因为建议只保留一个今天能执行的小动作。"
 
         review_text = "\n".join(
             [
                 f"# 每日复盘 - {review_date.isoformat()}",
                 "",
-                f"- 昨天最关键的问题：{key_issue}",
-                f"- 今天最值得调整的一件事：{recommended_adjustment}",
-                f"- 这条建议是否现实：{realism_note}",
+                "## 1. 昨天的分数整理",
+                *[f"- {key}: {value}" for key, value in score_summary.items()],
                 "",
-                self._weight_context_line(latest_weight),
+                "## 2. 昨天原因复盘",
+                *[f"- {item}" for item in reason_review],
+                "",
+                "## 3. 今天的建议",
+                *[f"- {item}" for item in today_suggestion],
+                "",
+                "## 4. 缺少的信息，找你要",
+                *[f"- {item}" for item in missing_info],
+                f"- 我想问你：{question_for_user}",
             ]
         ).strip()
-        return self.storage.save_review(review_date, review_text, key_issue, recommended_adjustment, realism_note)
+        return self.storage.save_review(
+            review_date,
+            review_text,
+            key_issue,
+            recommended_adjustment,
+            realism_note,
+            score_summary=score_summary,
+            reason_review=reason_review,
+            today_suggestion=today_suggestion,
+            missing_info=missing_info,
+            question_for_user=question_for_user,
+        )
 
     def get_review(self, target_date: date) -> ReviewResponse | None:
         return self.storage.get_review(target_date)
@@ -450,6 +484,114 @@ class HealthService:
         if len(recent_hunger) >= 2:
             return "最近这些想吃东西的时刻，更像没吃够、运动后需要补充，还是情绪性想吃？"
         return "今天如果有运动，结束后告诉我运动类型、时长和饥饿程度。"
+
+    def _build_review_score_summary(
+        self,
+        review_date: date,
+        metrics: dict[str, Any],
+        latest_weight: dict[str, Any] | None,
+        foods: list[dict[str, Any]],
+        hunger: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return {
+            "日期": review_date.isoformat(),
+            "睡眠分": _display_value(metrics.get("sleep_score")),
+            "恢复分": _display_value(metrics.get("readiness_score")),
+            "活动分": _display_value(metrics.get("activity_score")),
+            "活动消耗": _display_value(metrics.get("active_calories"), suffix="kcal"),
+            "步数": _display_value(metrics.get("steps")),
+            "最新体重": (
+                f"{float(latest_weight['weight_kg']):.1f}kg"
+                if latest_weight and latest_weight.get("weight_kg") is not None
+                else "缺"
+            ),
+            "餐食记录": f"{len(foods)} 条",
+            "饥饿/想吃记录": f"{len(hunger)} 条",
+        }
+
+    def _build_review_reasons(
+        self,
+        metrics: dict[str, Any],
+        foods: list[dict[str, Any]],
+        hunger: list[dict[str, Any]],
+        context: HealthContextResponse,
+        baseline_markers: list[dict[str, Any]],
+    ) -> list[str]:
+        reasons: list[str] = []
+        active_calories = metrics.get("active_calories") or 0
+        steps = metrics.get("steps") or 0
+        readiness = metrics.get("readiness_score")
+        if active_calories >= 250 or steps >= 7000:
+            reasons.append(
+                f"昨天活动量不低（活动消耗 {active_calories}kcal，步数 {steps}），所以判断饮食时要允许合理补充，但不能把运动变成放开吃的理由。"
+            )
+        elif metrics:
+            reasons.append("昨天 Oura 有恢复/活动数据，但活动量不是主要解释变量，饮食节奏和晚间边界更值得看。")
+        else:
+            reasons.append("昨天缺 Oura 分数，复盘只能先依赖饮食、体重和饥饿记录，结论可信度有限。")
+        baseline_keys = {str(item.get("marker_key") or "") for item in baseline_markers}
+        if readiness is not None and readiness < 75:
+            reasons.append(f"恢复分 {readiness} 偏保守，今天不适合叠加硬控饮食、脱水和高强度训练。")
+        elif baseline_keys.intersection({"high_uric_acid", "high_total_cholesterol", "low_diastolic_blood_pressure", "sinus_bradycardia"}):
+            reasons.append("健康基线提示建议要保守：避免高嘌呤/高加工补偿，也避免用极端限制去换体重下降。")
+        elif hunger:
+            reasons.append("昨天有饥饿或想吃记录，今天要区分真实需要补充和补偿性进食。")
+        elif not foods:
+            reasons.append("昨天没有餐食记录，所以现在看不到问题发生在正餐结构、甜食饮料还是夜间加餐。")
+        else:
+            reasons.append(f"当前策略仍是 {context.current_strategy.phase}，重点是稳定体重趋势，同时减少补偿性进食。")
+        return reasons[:2]
+
+    def _build_review_suggestions(
+        self,
+        metrics: dict[str, Any],
+        foods: list[dict[str, Any]],
+        hunger: list[dict[str, Any]],
+        context: HealthContextResponse,
+        baseline_markers: list[dict[str, Any]],
+    ) -> list[str]:
+        suggestions: list[str] = []
+        active_calories = metrics.get("active_calories") or 0
+        steps = metrics.get("steps") or 0
+        baseline_keys = {str(item.get("marker_key") or "") for item in baseline_markers}
+        if active_calories >= 250 or steps >= 7000:
+            suggestions.append("今天运动后如果饿，优先补一份明确正餐或蛋白+主食的小组合，不要用甜食/饮料当默认补充。")
+        else:
+            suggestions.append("今天先按正常餐次吃，不要因为昨天体重或活动分数临时加码节食。")
+        if baseline_keys.intersection({"high_uric_acid", "high_urea"}):
+            suggestions.append("补充时避开高嘌呤和过量肉类路线，优先选择更稳定、不过度刺激食欲的组合。")
+        elif "high_total_cholesterol" in baseline_keys:
+            suggestions.append("今天少用高加工和高脂零食做奖励，脂肪来源比单次热量数字更重要。")
+        elif hunger:
+            suggestions.append("如果下午或晚饭后想吃，先记录是饭后多久出现，再决定是补正餐还是延后 20 分钟。")
+        else:
+            suggestions.append(context.current_strategy.activity_strategy)
+        return suggestions[:3]
+
+    def _build_review_missing_info(
+        self,
+        context: HealthContextResponse,
+        foods: list[dict[str, Any]],
+        hunger: list[dict[str, Any]],
+        metrics: dict[str, Any],
+    ) -> list[str]:
+        missing: list[str] = []
+        if not foods:
+            missing.append("昨天缺餐食记录：至少告诉我早餐/午餐/晚餐大概吃了什么。")
+        if not hunger:
+            missing.append("缺饥饿/想吃场景：下次想吃时告诉我是饭后多久、饿还是嘴馋。")
+        if not metrics:
+            missing.append("缺 Oura 当日数据：需要同步后再判断恢复和活动。")
+        if context.missing:
+            missing.extend(context.missing[:2])
+        if not missing:
+            missing.append("现在最缺的是运动后补充偏好：你更容易想吃正餐、甜食、饮料，还是高蛋白/肉类？")
+        return missing[:4]
+
+    def _review_question_for_user(self, context: HealthContextResponse, missing_info: list[str]) -> str:
+        if missing_info:
+            return context.next_question
+        return "今天运动后如果想吃东西，直接告诉我运动类型、时长、饿的程度和想吃什么。"
 
     def respond_to_advice(self, request: AdviceRequest) -> AdviceResponse:
         occurred_at = request.requested_at or datetime.now(timezone.utc)
@@ -1085,3 +1227,11 @@ def _metric_summary(row: dict[str, Any]) -> dict[str, Any]:
         "active_calories": row.get("active_calories"),
         "steps": row.get("steps"),
     }
+
+
+def _display_value(value: Any, suffix: str = "") -> str:
+    if value is None:
+        return "缺"
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    return f"{value}{suffix}"

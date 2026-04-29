@@ -933,7 +933,19 @@ class Storage:
             recommended_action=row["recommended_action"],
         )
 
-    def save_review(self, target_date: date, review_text: str, key_issue: str, recommended_adjustment: str, realism_note: str) -> ReviewResponse:
+    def save_review(
+        self,
+        target_date: date,
+        review_text: str,
+        key_issue: str,
+        recommended_adjustment: str,
+        realism_note: str,
+        score_summary: dict[str, Any] | None = None,
+        reason_review: list[str] | None = None,
+        today_suggestion: list[str] | None = None,
+        missing_info: list[str] | None = None,
+        question_for_user: str | None = None,
+    ) -> ReviewResponse:
         markdown_path = self.paths.reviews_dir / f"{target_date.isoformat()}.md"
         markdown_path.write_text(review_text + "\n", encoding="utf-8")
         now = utc_now()
@@ -968,6 +980,11 @@ class Storage:
             recommended_adjustment=recommended_adjustment,
             realism_note=realism_note,
             markdown_path=str(markdown_path),
+            score_summary=score_summary or {},
+            reason_review=reason_review or [],
+            today_suggestion=today_suggestion or [],
+            missing_info=missing_info or [],
+            question_for_user=question_for_user,
         )
 
     def save_meal_feedback(

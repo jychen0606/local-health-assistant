@@ -117,6 +117,11 @@ class ReviewResponse(BaseModel):
     recommended_adjustment: str
     realism_note: str
     markdown_path: str
+    score_summary: dict[str, Any] = Field(default_factory=dict)
+    reason_review: list[str] = Field(default_factory=list)
+    today_suggestion: list[str] = Field(default_factory=list)
+    missing_info: list[str] = Field(default_factory=list)
+    question_for_user: str | None = None
 
 
 class WeightAnomalyReviewResponse(BaseModel):
