@@ -58,9 +58,10 @@ class OuraClient:
             )
 
         start_date = target_date.isoformat()
-        # Oura v2 collection endpoints accept date ranges. Using the next day as
-        # the end keeps the request robust if the API treats end_date as exclusive.
-        end_date = (target_date + timedelta(days=1)).isoformat()
+        # Oura's collection endpoints return records by their `day` field. For
+        # single-day syncs, request the same start and end day so we do not
+        # accidentally normalize the following day's summary into target_date.
+        end_date = target_date.isoformat()
         return {
             "target_date": start_date,
             "daily_sleep": self._get_collection("daily_sleep", start_date, end_date),
@@ -74,7 +75,7 @@ class OuraClient:
                 "Missing Oura access token. Set OURA_ACCESS_TOKEN, OURA_PERSONAL_ACCESS_TOKEN, or OURA_TOKEN."
             )
         start_date = target_date.isoformat()
-        end_date = (target_date + timedelta(days=1)).isoformat()
+        end_date = target_date.isoformat()
         warnings: list[dict[str, Any]] = []
         workout: dict[str, Any] = {"data": []}
         try:
@@ -317,9 +318,6 @@ def _first_for_day(payload: Any, target_date: date) -> dict[str, Any]:
     for row in rows:
         if isinstance(row, dict) and row.get("day") == target:
             return row
-    for row in rows:
-        if isinstance(row, dict):
-            return row
     return {}
 
 
@@ -331,9 +329,7 @@ def _rows_for_day(payload: Any, target_date: date) -> list[dict[str, Any]]:
         return []
     target = target_date.isoformat()
     matched = [row for row in rows if isinstance(row, dict) and row.get("day") == target]
-    if matched:
-        return matched
-    return [row for row in rows if isinstance(row, dict)]
+    return matched
 
 
 def _dict_value(row: dict[str, Any], key: str) -> dict[str, Any]:
