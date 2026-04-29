@@ -92,7 +92,7 @@ def infer_meal_slot(text: str) -> str:
         return "breakfast"
     if "午餐" in text:
         return "lunch"
-    if "晚餐" in text:
+    if "晚餐" in text or "晚上" in text:
         return "dinner"
     if "夜宵" in text:
         return "late_night"

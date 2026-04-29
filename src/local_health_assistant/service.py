@@ -536,6 +536,7 @@ class HealthService:
             reasons.append("昨天缺 Oura 分数，复盘只能先依赖饮食、体重和饥饿记录，结论可信度有限。")
         baseline_keys = {str(item.get("marker_key") or "") for item in baseline_markers}
         food_flags = self._food_risk_flags(foods)
+        barbecue = self._has_food_keyword(foods, ("烧烤", "烤串", "串串"))
         if readiness is not None and readiness < 75:
             reasons.append(f"恢复分 {readiness} 偏保守，今天不适合叠加硬控饮食、脱水和高强度训练。")
         elif (
@@ -545,6 +546,8 @@ class HealthService:
             reasons.append("昨天餐食里有可能推高尿酸负担的线索，所以今天补充可以正常吃，但不适合继续叠加酒、海鲜或大量肉类。")
         elif "high_total_cholesterol" in baseline_keys and food_flags.intersection({"sweet_drink", "processed", "late_night"}):
             reasons.append("昨天餐食里有甜饮、高加工或夜间加餐线索，所以今天更值得先稳住食物质量，而不是只看热量数字。")
+        elif barbecue:
+            reasons.append("昨天记录到晚餐是东北烧烤；这说明有外食场景，但还缺具体吃了哪些、有没有饮料和主食，所以不能进一步判断结构。")
         elif hunger:
             reasons.append("昨天有饥饿或想吃记录，今天要区分真实需要补充和补偿性进食。")
         elif not foods:
@@ -566,6 +569,7 @@ class HealthService:
         steps = metrics.get("steps") or 0
         baseline_keys = {str(item.get("marker_key") or "") for item in baseline_markers}
         food_flags = self._food_risk_flags(foods)
+        barbecue = self._has_food_keyword(foods, ("烧烤", "烤串", "串串"))
         activity_band = self._activity_band(active_calories=active_calories, steps=steps)
         if activity_band == "daily_baseline":
             suggestions.append("如果今天只是正常走路量，先按正常餐次吃；只有出现明确饥饿或正式训练，再考虑加一份清楚的补充。")
@@ -582,6 +586,8 @@ class HealthService:
             suggestions.append("今天少用高加工和高脂零食做奖励，脂肪来源比单次热量数字更重要。")
         elif hunger:
             suggestions.append("如果下午或晚饭后想吃，先记录是饭后多久出现，再决定是补正餐还是延后 20 分钟。")
+        elif barbecue:
+            suggestions.append("今天不用因为昨晚烧烤额外惩罚自己；下一餐回到清楚结构：正常主食、明确蛋白、加一点蔬菜。")
         else:
             suggestions.append(context.current_strategy.activity_strategy)
         return suggestions[:3]
@@ -609,6 +615,10 @@ class HealthService:
         if any(str(item.get("meal_slot") or "") == "late_night" for item in foods):
             flags.add("late_night")
         return flags
+
+    def _has_food_keyword(self, foods: list[dict[str, Any]], keywords: tuple[str, ...]) -> bool:
+        descriptions = " ".join(str(item.get("description") or "") for item in foods)
+        return any(keyword in descriptions for keyword in keywords)
 
     def _build_review_missing_info(
         self,
@@ -922,6 +932,8 @@ class HealthService:
         processed = _contains_any(description, PROCESSED_KEYWORDS)
         protein = _contains_any(description, PROTEIN_KEYWORDS)
         vegetable = _contains_any(description, VEGETABLE_KEYWORDS)
+        barbecue = _contains_any(description, ("烧烤", "烤串", "串串"))
+        food_flags = self._food_risk_flags([{"description": description, "meal_slot": meal_slot}])
         late_night_recent = sum(1 for item in recent_foods if item.get("meal_slot") == "late_night")
         dessert_like_recent = sum(1 for item in recent_foods if _contains_any(str(item.get("description") or ""), SUGARY_KEYWORDS))
 
@@ -935,6 +947,9 @@ class HealthService:
         elif sugary:
             evaluation_summary = "这顿最需要注意的是糖和液体热量。"
             biggest_issue = "如果这是正餐，再叠甜饮或甜品会让下一顿更难判断。"
+        elif barbecue:
+            evaluation_summary = "这顿是烧烤外食场景，先记录下来是有用的。"
+            biggest_issue = "现在还不知道具体吃了哪些串、有没有饮料和主食，所以只能判断场景，不能判断结构。"
         elif not protein:
             evaluation_summary = "这顿的核心短板是蛋白不够明确。"
             biggest_issue = "如果这一顿蛋白偏少，下一顿更容易靠嘴馋来补。"
@@ -955,6 +970,8 @@ class HealthService:
             next_meal_suggestion = "下一顿清一点就够，先补蛋白和蔬菜，别再叠甜饮或甜品，也别补偿性挨饿。"
         elif sugary:
             next_meal_suggestion = "下一顿优先稳定血糖波动：蛋白正常、蔬菜优先、主食正常吃，不要再叠甜饮。"
+        elif barbecue:
+            next_meal_suggestion = "下一顿回到清楚结构就够：正常主食、明确蛋白、加一点蔬菜，不用因为烧烤额外惩罚自己。"
         elif not protein:
             next_meal_suggestion = "下一顿最重要的是把蛋白补明确，再决定主食和加餐，不要靠零食补回来。"
         elif processed:
@@ -966,9 +983,9 @@ class HealthService:
             next_meal_suggestion += " 最近 7 天甜口/饮料频率偏高，下一顿别再用“奖励自己”当理由。"
         if adherence_summary["not_followed"] >= 2:
             next_meal_suggestion += " 这次先做最小可执行版本，不要一口气把标准拉太满。"
-        if baseline_keys.intersection({"high_uric_acid", "high_urea"}):
+        if baseline_keys.intersection({"high_uric_acid", "high_urea"}) and food_flags.intersection({"alcohol", "seafood", "heavy_meat"}):
             next_meal_suggestion += " 结合你的基线，下一顿尽量别走重口、高嘌呤、过激进补偿路线。"
-        if "high_total_cholesterol" in baseline_keys:
+        if "high_total_cholesterol" in baseline_keys and food_flags.intersection({"sweet_drink", "processed", "late_night"}):
             next_meal_suggestion += " 也要顺手把脂肪来源收干净一点。"
         if "high_waist_hip_ratio" in baseline_keys:
             next_meal_suggestion += " 重点还是稳住结构和晚间边界，不是靠下一顿极端补救。"
