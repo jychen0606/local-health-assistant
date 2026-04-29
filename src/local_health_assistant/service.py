@@ -530,10 +530,16 @@ class HealthService:
         else:
             reasons.append("昨天缺 Oura 分数，复盘只能先依赖饮食、体重和饥饿记录，结论可信度有限。")
         baseline_keys = {str(item.get("marker_key") or "") for item in baseline_markers}
+        food_flags = self._food_risk_flags(foods)
         if readiness is not None and readiness < 75:
             reasons.append(f"恢复分 {readiness} 偏保守，今天不适合叠加硬控饮食、脱水和高强度训练。")
-        elif baseline_keys.intersection({"high_uric_acid", "high_total_cholesterol", "low_diastolic_blood_pressure", "sinus_bradycardia"}):
-            reasons.append("健康基线提示建议要保守：避免高嘌呤/高加工补偿，也避免用极端限制去换体重下降。")
+        elif (
+            baseline_keys.intersection({"high_uric_acid", "high_urea"})
+            and food_flags.intersection({"alcohol", "seafood", "heavy_meat"})
+        ):
+            reasons.append("昨天餐食里有可能推高尿酸负担的线索，所以今天补充可以正常吃，但不适合继续叠加酒、海鲜或大量肉类。")
+        elif "high_total_cholesterol" in baseline_keys and food_flags.intersection({"sweet_drink", "processed", "late_night"}):
+            reasons.append("昨天餐食里有甜饮、高加工或夜间加餐线索，所以今天更值得先稳住食物质量，而不是只看热量数字。")
         elif hunger:
             reasons.append("昨天有饥饿或想吃记录，今天要区分真实需要补充和补偿性进食。")
         elif not foods:
@@ -554,19 +560,40 @@ class HealthService:
         active_calories = metrics.get("active_calories") or 0
         steps = metrics.get("steps") or 0
         baseline_keys = {str(item.get("marker_key") or "") for item in baseline_markers}
+        food_flags = self._food_risk_flags(foods)
         if active_calories >= 250 or steps >= 7000:
             suggestions.append("今天运动后如果饿，优先补一份明确正餐或蛋白+主食的小组合，不要用甜食/饮料当默认补充。")
         else:
             suggestions.append("今天先按正常餐次吃，不要因为昨天体重或活动分数临时加码节食。")
-        if baseline_keys.intersection({"high_uric_acid", "high_urea"}):
+        if (
+            baseline_keys.intersection({"high_uric_acid", "high_urea"})
+            and food_flags.intersection({"alcohol", "seafood", "heavy_meat"})
+        ):
             suggestions.append("补充时避开高嘌呤和过量肉类路线，优先选择更稳定、不过度刺激食欲的组合。")
-        elif "high_total_cholesterol" in baseline_keys:
+        elif "high_total_cholesterol" in baseline_keys and food_flags.intersection({"sweet_drink", "processed", "late_night"}):
             suggestions.append("今天少用高加工和高脂零食做奖励，脂肪来源比单次热量数字更重要。")
         elif hunger:
             suggestions.append("如果下午或晚饭后想吃，先记录是饭后多久出现，再决定是补正餐还是延后 20 分钟。")
         else:
             suggestions.append(context.current_strategy.activity_strategy)
         return suggestions[:3]
+
+    def _food_risk_flags(self, foods: list[dict[str, Any]]) -> set[str]:
+        descriptions = " ".join(str(item.get("description") or "") for item in foods)
+        flags: set[str] = set()
+        if any(keyword in descriptions for keyword in ("酒", "啤酒", "红酒", "鸡尾酒")):
+            flags.add("alcohol")
+        if any(keyword in descriptions for keyword in ("海鲜", "虾", "蟹", "贝", "生蚝", "火锅")):
+            flags.add("seafood")
+        if any(keyword in descriptions for keyword in ("烤肉", "牛排", "羊肉", "五花肉", "肉吃多", "很多肉", "大量肉")):
+            flags.add("heavy_meat")
+        if any(keyword in descriptions for keyword in ("奶茶", "可乐", "汽水", "果汁", "甜饮", "含糖饮料")):
+            flags.add("sweet_drink")
+        if any(keyword in descriptions for keyword in ("薯片", "炸鸡", "汉堡", "披萨", "蛋糕", "饼干", "甜品", "零食")):
+            flags.add("processed")
+        if any(str(item.get("meal_slot") or "") == "late_night" for item in foods):
+            flags.add("late_night")
+        return flags
 
     def _build_review_missing_info(
         self,

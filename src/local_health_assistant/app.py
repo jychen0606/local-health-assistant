@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from datetime import date
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from local_health_assistant.config import Settings
 from local_health_assistant.models import (
@@ -822,6 +822,14 @@ def get_review(target_date: date) -> dict[str, object]:
     if not review:
         raise HTTPException(status_code=404, detail="Review not found")
     return review.model_dump(mode="json")
+
+
+@app.get("/health/reviews/{target_date}/markdown", response_class=PlainTextResponse)
+def get_review_markdown(target_date: date) -> PlainTextResponse:
+    review = service.get_review(target_date)
+    if not review:
+        raise HTTPException(status_code=404, detail="Review not found")
+    return PlainTextResponse(review.review_text, media_type="text/markdown; charset=utf-8")
 
 
 @app.get("/health/weights/anomaly/{target_date}")
