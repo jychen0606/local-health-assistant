@@ -58,15 +58,16 @@ class OuraClient:
             )
 
         start_date = target_date.isoformat()
-        # Oura's collection endpoints return records by their `day` field. For
-        # single-day syncs, request the same start and end day so we do not
-        # accidentally normalize the following day's summary into target_date.
         end_date = target_date.isoformat()
+        # daily_activity behaves like a boundary summary in Oura's API: asking
+        # for start=end returns no row, while previous day -> target day returns
+        # the target day's row. Sleep/readiness do not need this offset.
+        activity_start_date = (target_date - timedelta(days=1)).isoformat()
         return {
             "target_date": start_date,
             "daily_sleep": self._get_collection("daily_sleep", start_date, end_date),
             "daily_readiness": self._get_collection("daily_readiness", start_date, end_date),
-            "daily_activity": self._get_collection("daily_activity", start_date, end_date),
+            "daily_activity": self._get_collection("daily_activity", activity_start_date, end_date),
         }
 
     def fetch_activity_snapshot(self, target_date: date) -> dict[str, Any]:
@@ -76,6 +77,7 @@ class OuraClient:
             )
         start_date = target_date.isoformat()
         end_date = target_date.isoformat()
+        activity_start_date = (target_date - timedelta(days=1)).isoformat()
         warnings: list[dict[str, Any]] = []
         workout: dict[str, Any] = {"data": []}
         try:
@@ -93,7 +95,7 @@ class OuraClient:
             )
         return {
             "target_date": start_date,
-            "daily_activity": self._get_collection("daily_activity", start_date, end_date),
+            "daily_activity": self._get_collection("daily_activity", activity_start_date, end_date),
             "workout": workout,
             "warnings": warnings,
         }
