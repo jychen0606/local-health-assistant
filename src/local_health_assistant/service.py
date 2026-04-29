@@ -414,7 +414,7 @@ class HealthService:
             nutrition_strategy = "优先稳定餐次结构，避免默认高嘌呤和极端补偿路线。"
         if "high_total_cholesterol" in risk_constraints:
             nutrition_strategy += " 同时关注脂肪来源和加工食品负担。"
-        activity_strategy = "把运动当作补充和恢复的上下文，不把运动量当作放开吃或过度限制的理由。"
+        activity_strategy = "先区分日常走路和正式训练；只有正式训练、明显高活动量或明确饥饿时，才需要额外补充判断。"
         if recent_metrics and (recent_metrics[0].get("readiness_score") or 0) < 70:
             activity_strategy += " 最近恢复偏弱时，建议会更保守。"
         evidence = [
@@ -478,12 +478,12 @@ class HealthService:
         if any("饥饿" in item for item in missing):
             return "下次明显想吃东西时，告诉我发生在饭后多久、是真的饿还是嘴馋。"
         if "high_uric_acid" in baseline_keys:
-            return "你运动后最常想补充的是正餐、甜食、饮料，还是高蛋白/肉类？"
+            return "如果今天走路明显偏多或有正式训练，你最常想补充的是正餐、甜食、饮料，还是高蛋白/肉类？"
         if any(item.get("meal_slot") == "late_night" for item in recent_foods):
             return "夜间想吃东西通常是在晚餐后多久出现？"
         if len(recent_hunger) >= 2:
-            return "最近这些想吃东西的时刻，更像没吃够、运动后需要补充，还是情绪性想吃？"
-        return "今天如果有运动，结束后告诉我运动类型、时长和饥饿程度。"
+            return "最近这些想吃东西的时刻，更像没吃够、走路多或训练后需要补充，还是情绪性想吃？"
+        return "今天如果有正式训练，结束后告诉我运动类型、时长和饥饿程度。"
 
     def _build_review_score_summary(
         self,
@@ -521,9 +521,14 @@ class HealthService:
         active_calories = metrics.get("active_calories") or 0
         steps = metrics.get("steps") or 0
         readiness = metrics.get("readiness_score")
-        if active_calories >= 250 or steps >= 7000:
+        activity_band = self._activity_band(active_calories=active_calories, steps=steps)
+        if activity_band == "daily_baseline":
             reasons.append(
-                f"昨天活动量不低（活动消耗 {active_calories}kcal，步数 {steps}），所以判断饮食时要允许合理补充，但不能把运动变成放开吃的理由。"
+                f"昨天大约是基础日常活动量（活动消耗 {active_calories}kcal，步数 {steps}，接近 8000 步和 350kcal 这一档），更像正常走路，不等于正式训练。"
+            )
+        elif activity_band == "elevated":
+            reasons.append(
+                f"昨天活动量偏高（活动消耗 {active_calories}kcal，步数 {steps}），判断饥饿和进食时要考虑活动负荷，但仍需要看实际餐食。"
             )
         elif metrics:
             reasons.append("昨天 Oura 有恢复/活动数据，但活动量不是主要解释变量，饮食节奏和晚间边界更值得看。")
@@ -561,8 +566,11 @@ class HealthService:
         steps = metrics.get("steps") or 0
         baseline_keys = {str(item.get("marker_key") or "") for item in baseline_markers}
         food_flags = self._food_risk_flags(foods)
-        if active_calories >= 250 or steps >= 7000:
-            suggestions.append("今天运动后如果饿，优先补一份明确正餐或蛋白+主食的小组合，不要用甜食/饮料当默认补充。")
+        activity_band = self._activity_band(active_calories=active_calories, steps=steps)
+        if activity_band == "daily_baseline":
+            suggestions.append("如果今天只是正常走路量，先按正常餐次吃；只有出现明确饥饿或正式训练，再考虑加一份清楚的补充。")
+        elif activity_band == "elevated":
+            suggestions.append("如果今天也有明显高活动量，饿的时候优先补一份明确正餐或蛋白+主食的小组合，不要用甜食/饮料当默认补充。")
         else:
             suggestions.append("今天先按正常餐次吃，不要因为昨天体重或活动分数临时加码节食。")
         if (
@@ -577,6 +585,13 @@ class HealthService:
         else:
             suggestions.append(context.current_strategy.activity_strategy)
         return suggestions[:3]
+
+    def _activity_band(self, active_calories: int | float, steps: int | float) -> str:
+        if 7000 <= steps <= 9000 and 250 <= active_calories <= 450:
+            return "daily_baseline"
+        if active_calories > 450 or steps > 10000:
+            return "elevated"
+        return "normal_or_low"
 
     def _food_risk_flags(self, foods: list[dict[str, Any]]) -> set[str]:
         descriptions = " ".join(str(item.get("description") or "") for item in foods)
@@ -612,13 +627,13 @@ class HealthService:
         if context.missing:
             missing.extend(context.missing[:2])
         if not missing:
-            missing.append("现在最缺的是运动后补充偏好：你更容易想吃正餐、甜食、饮料，还是高蛋白/肉类？")
+            missing.append("现在最缺的是走路多或正式训练后的补充偏好：你更容易想吃正餐、甜食、饮料，还是高蛋白/肉类？")
         return missing[:4]
 
     def _review_question_for_user(self, context: HealthContextResponse, missing_info: list[str]) -> str:
         if missing_info:
             return context.next_question
-        return "今天运动后如果想吃东西，直接告诉我运动类型、时长、饿的程度和想吃什么。"
+        return "今天如果走路明显偏多或有正式训练后想吃东西，告诉我活动类型、时长、饿的程度和想吃什么。"
 
     def respond_to_advice(self, request: AdviceRequest) -> AdviceResponse:
         occurred_at = request.requested_at or datetime.now(timezone.utc)
