@@ -876,6 +876,11 @@ def oura_activity_sync(request: OuraSyncRequest) -> dict[str, object]:
     return service.run_activity_sync(request.target_date, request.trigger_type)
 
 
+@app.post("/health/oura/extended-sync")
+def oura_extended_sync(request: OuraSyncRequest) -> dict[str, object]:
+    return service.sync_oura_extended(request.target_date)
+
+
 @app.get("/health/oura/daily/{target_date}")
 def get_oura_daily(target_date: date) -> dict[str, object]:
     metrics = storage.get_oura_daily_metrics(target_date)

@@ -522,6 +522,15 @@ class Storage:
         )
         return path
 
+    def save_oura_extended_snapshot(self, target_date: date, snapshot: dict[str, Any]) -> Path:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        path = self.paths.snapshots_dir / f"extended-{target_date.isoformat()}-{stamp}.json"
+        path.write_text(
+            json.dumps(snapshot, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        return path
+
     def upsert_oura_daily_metrics(self, metrics: dict[str, Any]) -> None:
         self._insert_simple(
             """

@@ -771,7 +771,7 @@ class HealthService:
         if self.oura_oauth_client is None:
             raise RuntimeError("Oura OAuth is not configured.")
         authorization_url, state = self.oura_oauth_client.build_authorization_url(
-            scopes=["daily", "personal", "workout"]
+            scopes=["daily", "personal", "workout", "tag", "session", "heartrate", "spo2"]
         )
         self.storage.save_oauth_state("oura", state)
         return OuraAuthStartResponse(authorization_url=authorization_url, state=state)
@@ -871,6 +871,24 @@ class HealthService:
             "active_calories": context.get("active_calories"),
             "steps": context.get("steps"),
             "new_workout_count": len(new_workouts),
+            "warnings": snapshot.get("warnings") or [],
+        }
+
+    def sync_oura_extended(self, target_date: date) -> dict[str, Any]:
+        effective_client = self._oura_client_with_stored_token()
+        if effective_client is None:
+            return {"target_date": target_date.isoformat(), "status": "failed", "message": "Oura client is not configured."}
+        snapshot = effective_client.fetch_extended_snapshot(target_date)
+        snapshot_path = self.storage.save_oura_extended_snapshot(target_date, snapshot)
+        collections: dict[str, int] = {}
+        for key, value in snapshot.items():
+            if isinstance(value, dict) and isinstance(value.get("data"), list):
+                collections[key] = len(value["data"])
+        return {
+            "target_date": target_date.isoformat(),
+            "status": "success",
+            "snapshot_path": str(snapshot_path),
+            "collections": collections,
             "warnings": snapshot.get("warnings") or [],
         }
 

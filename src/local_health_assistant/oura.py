@@ -101,7 +101,13 @@ class OuraClient:
         }
 
     def _get_collection(self, collection: str, start_date: str, end_date: str) -> dict[str, Any]:
-        query = urllib.parse.urlencode({"start_date": start_date, "end_date": end_date})
+        return self._get_collection_with_params(
+            collection,
+            {"start_date": start_date, "end_date": end_date},
+        )
+
+    def _get_collection_with_params(self, collection: str, params: dict[str, str]) -> dict[str, Any]:
+        query = urllib.parse.urlencode(params)
         url = f"{self.base_url}/v2/usercollection/{collection}?{query}"
         req = urllib.request.Request(
             url=url,
@@ -126,6 +132,36 @@ class OuraClient:
         if not isinstance(parsed, dict):
             raise OuraAPIError(f"Oura {collection} returned an unexpected payload")
         return parsed
+
+    def fetch_extended_snapshot(self, target_date: date) -> dict[str, Any]:
+        if not self.access_token:
+            raise OuraConfigError(
+                "Missing Oura access token. Set OURA_ACCESS_TOKEN, OURA_PERSONAL_ACCESS_TOKEN, or OURA_TOKEN."
+            )
+        start_date = target_date.isoformat()
+        end_date = target_date.isoformat()
+        start_datetime = f"{start_date}T00:00:00+08:00"
+        end_datetime = f"{start_date}T23:59:59+08:00"
+        collections: dict[str, dict[str, str]] = {
+            "tag": {"start_date": start_date, "end_date": end_date},
+            "enhanced_tag": {"start_date": start_date, "end_date": end_date},
+            "session": {"start_date": start_date, "end_date": end_date},
+            "daily_spo2": {"start_date": start_date, "end_date": end_date},
+            "heartrate": {"start_datetime": start_datetime, "end_datetime": end_datetime},
+        }
+        snapshot: dict[str, Any] = {"target_date": start_date, "warnings": []}
+        for collection, params in collections.items():
+            try:
+                snapshot[collection] = self._get_collection_with_params(collection, params)
+            except OuraAPIError as e:
+                snapshot[collection] = {"data": []}
+                snapshot["warnings"].append(
+                    {
+                        "collection": collection,
+                        "detail": str(e),
+                    }
+                )
+        return snapshot
 
 
 @dataclass(frozen=True)
