@@ -771,7 +771,7 @@ class HealthService:
         if self.oura_oauth_client is None:
             raise RuntimeError("Oura OAuth is not configured.")
         authorization_url, state = self.oura_oauth_client.build_authorization_url(
-            scopes=["daily", "personal"]
+            scopes=["daily", "personal", "workout"]
         )
         self.storage.save_oauth_state("oura", state)
         return OuraAuthStartResponse(authorization_url=authorization_url, state=state)
