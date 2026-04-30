@@ -505,7 +505,7 @@ class HealthService:
                 if latest_weight and latest_weight.get("weight_kg") is not None
                 else "缺"
             ),
-            "餐食记录": f"{len(foods)} 条",
+            "餐食记录": self._food_record_summary(foods),
             "饥饿/想吃记录": f"{len(hunger)} 条",
         }
 
@@ -537,17 +537,20 @@ class HealthService:
         baseline_keys = {str(item.get("marker_key") or "") for item in baseline_markers}
         food_flags = self._food_risk_flags(foods)
         barbecue = self._has_food_keyword(foods, ("烧烤", "烤串", "串串"))
+        detailed_barbecue = barbecue and self._has_food_keyword(foods, ("牛肉", "五花肉", "凉皮", "冰红茶", "可乐"))
         if readiness is not None and readiness < 75:
             reasons.append(f"恢复分 {readiness} 偏保守，今天不适合叠加硬控饮食、脱水和高强度训练。")
+        elif detailed_barbecue:
+            reasons.append("昨天晚餐是烧烤，补充记录包含牛肉/五花肉、凉皮、可乐和小罐冰红茶；主要问题是红肉/肥肉、重口外食和含糖饮料叠加，蔬菜信息缺失。")
         elif (
             baseline_keys.intersection({"high_uric_acid", "high_urea"})
             and food_flags.intersection({"alcohol", "seafood", "heavy_meat"})
         ):
-            reasons.append("昨天餐食里有可能推高尿酸负担的线索，所以今天补充可以正常吃，但不适合继续叠加酒、海鲜或大量肉类。")
+            reasons.append("昨天餐食命中了酒、海鲜或大量肉类这类尿酸相关触发项；今天不应继续叠加同类外食或高肉量补充。")
         elif "high_total_cholesterol" in baseline_keys and food_flags.intersection({"sweet_drink", "processed", "late_night"}):
             reasons.append("昨天餐食里有甜饮、高加工或夜间加餐线索，所以今天更值得先稳住食物质量，而不是只看热量数字。")
         elif barbecue:
-            reasons.append("昨天记录到晚餐是东北烧烤；这说明有外食场景，但还缺具体吃了哪些、有没有饮料和主食，所以不能进一步判断结构。")
+            reasons.append("昨天晚餐记录为东北烧烤；这是重口外食场景，但缺具体食物、饮料、主食和份量，当前只能确认风险场景，不能判断实际摄入结构。")
         elif hunger:
             reasons.append("昨天有饥饿或想吃记录，今天要区分真实需要补充和补偿性进食。")
         elif not foods:
@@ -570,6 +573,7 @@ class HealthService:
         baseline_keys = {str(item.get("marker_key") or "") for item in baseline_markers}
         food_flags = self._food_risk_flags(foods)
         barbecue = self._has_food_keyword(foods, ("烧烤", "烤串", "串串"))
+        detailed_barbecue = barbecue and self._has_food_keyword(foods, ("牛肉", "五花肉", "凉皮", "冰红茶", "可乐"))
         activity_band = self._activity_band(active_calories=active_calories, steps=steps)
         if activity_band == "daily_baseline":
             suggestions.append("如果今天只是正常走路量，先按正常餐次吃；只有出现明确饥饿或正式训练，再考虑加一份清楚的补充。")
@@ -577,7 +581,9 @@ class HealthService:
             suggestions.append("如果今天也有明显高活动量，饿的时候优先补一份明确正餐或蛋白+主食的小组合，不要用甜食/饮料当默认补充。")
         else:
             suggestions.append("今天先按正常餐次吃，不要因为昨天体重或活动分数临时加码节食。")
-        if (
+        if detailed_barbecue:
+            suggestions.append("今天的修正重点是降低变量：不再叠加烧烤、甜饮或夜宵；下一餐保留正常主食，蛋白选低油做法，并补足一份蔬菜。")
+        elif (
             baseline_keys.intersection({"high_uric_acid", "high_urea"})
             and food_flags.intersection({"alcohol", "seafood", "heavy_meat"})
         ):
@@ -587,7 +593,7 @@ class HealthService:
         elif hunger:
             suggestions.append("如果下午或晚饭后想吃，先记录是饭后多久出现，再决定是补正餐还是延后 20 分钟。")
         elif barbecue:
-            suggestions.append("今天不用因为昨晚烧烤额外惩罚自己；下一餐回到清楚结构：正常主食、明确蛋白、加一点蔬菜。")
+            suggestions.append("今天的修正动作是把下一餐结构补完整：正常主食、明确蛋白、至少一份蔬菜；同时避免继续叠加重口外食、甜饮或夜宵。")
         else:
             suggestions.append(context.current_strategy.activity_strategy)
         return suggestions[:3]
@@ -599,6 +605,18 @@ class HealthService:
             return "elevated"
         return "normal_or_low"
 
+    def _food_record_summary(self, foods: list[dict[str, Any]]) -> str:
+        if not foods:
+            return "0 条"
+        meal_slots = {
+            str(item.get("meal_slot") or "")
+            for item in foods
+            if str(item.get("meal_slot") or "") and str(item.get("meal_slot") or "") != "unspecified"
+        }
+        if len(meal_slots) == 1 and len(foods) > 1:
+            return f"{len(foods)} 条（1 个餐次）"
+        return f"{len(foods)} 条"
+
     def _food_risk_flags(self, foods: list[dict[str, Any]]) -> set[str]:
         descriptions = " ".join(str(item.get("description") or "") for item in foods)
         flags: set[str] = set()
@@ -608,7 +626,7 @@ class HealthService:
             flags.add("seafood")
         if any(keyword in descriptions for keyword in ("烤肉", "牛排", "羊肉", "五花肉", "肉吃多", "很多肉", "大量肉")):
             flags.add("heavy_meat")
-        if any(keyword in descriptions for keyword in ("奶茶", "可乐", "汽水", "果汁", "甜饮", "含糖饮料")):
+        if any(keyword in descriptions for keyword in ("奶茶", "可乐", "汽水", "果汁", "甜饮", "含糖饮料", "冰红茶")):
             flags.add("sweet_drink")
         if any(keyword in descriptions for keyword in ("薯片", "炸鸡", "汉堡", "披萨", "蛋糕", "饼干", "甜品", "零食")):
             flags.add("processed")
@@ -948,8 +966,8 @@ class HealthService:
             evaluation_summary = "这顿最需要注意的是糖和液体热量。"
             biggest_issue = "如果这是正餐，再叠甜饮或甜品会让下一顿更难判断。"
         elif barbecue:
-            evaluation_summary = "这顿是烧烤外食场景，先记录下来是有用的。"
-            biggest_issue = "现在还不知道具体吃了哪些串、有没有饮料和主食，所以只能判断场景，不能判断结构。"
+            evaluation_summary = "这顿属于重口外食场景，记录粒度还不够。"
+            biggest_issue = "缺少具体串品、份量、饮料和主食信息；目前只能判断这是风险场景，不能判断是否真正超量。"
         elif not protein:
             evaluation_summary = "这顿的核心短板是蛋白不够明确。"
             biggest_issue = "如果这一顿蛋白偏少，下一顿更容易靠嘴馋来补。"
@@ -967,11 +985,11 @@ class HealthService:
 
         next_meal_suggestion = "下一顿优先把蛋白和蔬菜补齐，主食正常吃，不要因为这一顿有波动就故意不吃。"
         if sugary and protein:
-            next_meal_suggestion = "下一顿清一点就够，先补蛋白和蔬菜，别再叠甜饮或甜品，也别补偿性挨饿。"
+            next_meal_suggestion = "下一顿优先补足蛋白和蔬菜，不再叠加甜饮或甜品，也不要用少吃一顿来抵消。"
         elif sugary:
             next_meal_suggestion = "下一顿优先稳定血糖波动：蛋白正常、蔬菜优先、主食正常吃，不要再叠甜饮。"
         elif barbecue:
-            next_meal_suggestion = "下一顿回到清楚结构就够：正常主食、明确蛋白、加一点蔬菜，不用因为烧烤额外惩罚自己。"
+            next_meal_suggestion = "下一顿按结构修正：正常主食、明确蛋白、至少一份蔬菜；不要继续叠加重口外食、甜饮或夜宵。"
         elif not protein:
             next_meal_suggestion = "下一顿最重要的是把蛋白补明确，再决定主食和加餐，不要靠零食补回来。"
         elif processed:
