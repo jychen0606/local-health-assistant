@@ -103,6 +103,8 @@ class HealthService:
                             payload=anomaly_review.model_dump(mode="json"),
                         )
                     )
+            elif record.record_type == "activity":
+                self.storage.save_manual_activity_log(event_id, record.payload, record.confidence)
         if parsed.advice_outcome_status:
             latest_advice = self.storage.latest_advice_record_for_session(request.session_key)
             if latest_advice:
@@ -123,6 +125,7 @@ class HealthService:
         review_date = target_date or (date.today() - timedelta(days=1))
         foods = self.storage.list_food_logs_for_date(review_date)
         hunger = self.storage.list_hunger_logs_for_date(review_date)
+        activities = self.storage.list_manual_activity_logs_for_date(review_date)
         latest_weight = self.storage.latest_weight()
         metrics = self.storage.get_oura_daily_metrics(review_date) or {}
         context = self.get_context()
@@ -133,11 +136,13 @@ class HealthService:
             latest_weight=latest_weight,
             foods=foods,
             hunger=hunger,
+            activities=activities,
         )
         reason_review = self._build_review_reasons(
             metrics=metrics,
             foods=foods,
             hunger=hunger,
+            activities=activities,
             context=context,
             baseline_markers=baseline_markers,
         )
@@ -145,6 +150,7 @@ class HealthService:
             metrics=metrics,
             foods=foods,
             hunger=hunger,
+            activities=activities,
             context=context,
             baseline_markers=baseline_markers,
         )
@@ -492,6 +498,7 @@ class HealthService:
         latest_weight: dict[str, Any] | None,
         foods: list[dict[str, Any]],
         hunger: list[dict[str, Any]],
+        activities: list[dict[str, Any]],
     ) -> dict[str, Any]:
         return {
             "日期": review_date.isoformat(),
@@ -507,6 +514,7 @@ class HealthService:
             ),
             "餐食记录": self._food_record_summary(foods),
             "饥饿/想吃记录": f"{len(hunger)} 条",
+            "手动运动记录": self._activity_record_summary(activities),
         }
 
     def _build_review_reasons(
@@ -514,6 +522,7 @@ class HealthService:
         metrics: dict[str, Any],
         foods: list[dict[str, Any]],
         hunger: list[dict[str, Any]],
+        activities: list[dict[str, Any]],
         context: HealthContextResponse,
         baseline_markers: list[dict[str, Any]],
     ) -> list[str]:
@@ -522,7 +531,13 @@ class HealthService:
         steps = metrics.get("steps") or 0
         readiness = metrics.get("readiness_score")
         activity_band = self._activity_band(active_calories=active_calories, steps=steps)
-        if activity_band == "daily_baseline":
+        if activities and activity_band == "elevated":
+            reasons.append(
+                f"昨天有手动运动记录：{self._activity_record_summary(activities)}；Oura 同时显示高活动量（活动消耗 {active_calories}kcal，步数 {steps}），所以这是训练日，不按普通走路处理。"
+            )
+        elif activities:
+            reasons.append(f"昨天有手动运动记录：{self._activity_record_summary(activities)}；Oura 数据未显示明显高活动时，优先把它当作运动类型补充而不是强度证据。")
+        elif activity_band == "daily_baseline":
             reasons.append(
                 f"昨天大约是基础日常活动量（活动消耗 {active_calories}kcal，步数 {steps}，接近 8000 步和 350kcal 这一档），更像正常走路，不等于正式训练。"
             )
@@ -564,6 +579,7 @@ class HealthService:
         metrics: dict[str, Any],
         foods: list[dict[str, Any]],
         hunger: list[dict[str, Any]],
+        activities: list[dict[str, Any]],
         context: HealthContextResponse,
         baseline_markers: list[dict[str, Any]],
     ) -> list[str]:
@@ -575,7 +591,9 @@ class HealthService:
         barbecue = self._has_food_keyword(foods, ("烧烤", "烤串", "串串"))
         detailed_barbecue = barbecue and self._has_food_keyword(foods, ("牛肉", "五花肉", "凉皮", "冰红茶", "可乐"))
         activity_band = self._activity_band(active_calories=active_calories, steps=steps)
-        if activity_band == "daily_baseline":
+        if activities and activity_band == "elevated":
+            suggestions.append("今天先按训练日后的恢复处理：正常吃正餐，保留主食和蛋白，避免把高活动日转化为额外进食变量。")
+        elif activity_band == "daily_baseline":
             suggestions.append("如果今天只是正常走路量，先按正常餐次吃；只有出现明确饥饿或正式训练，再考虑加一份清楚的补充。")
         elif activity_band == "elevated":
             suggestions.append("如果今天也有明显高活动量，饿的时候优先补一份明确正餐或蛋白+主食的小组合，不要用甜食/饮料当默认补充。")
@@ -616,6 +634,12 @@ class HealthService:
         if len(meal_slots) == 1 and len(foods) > 1:
             return f"{len(foods)} 条（1 个餐次）"
         return f"{len(foods)} 条"
+
+    def _activity_record_summary(self, activities: list[dict[str, Any]]) -> str:
+        if not activities:
+            return "0 条"
+        activity_types = sorted({str(item.get("activity_type") or "unknown") for item in activities})
+        return "、".join(activity_types)
 
     def _food_risk_flags(self, foods: list[dict[str, Any]]) -> set[str]:
         descriptions = " ".join(str(item.get("description") or "") for item in foods)

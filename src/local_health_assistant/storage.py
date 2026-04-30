@@ -72,6 +72,17 @@ SCHEMA_STATEMENTS = [
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS manual_activity_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        conversation_event_id INTEGER NOT NULL,
+        logged_at TEXT NOT NULL,
+        activity_type TEXT NOT NULL,
+        description TEXT NOT NULL,
+        confidence REAL NOT NULL,
+        created_at TEXT NOT NULL
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS weight_logs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         conversation_event_id INTEGER NOT NULL,
@@ -437,6 +448,23 @@ class Storage:
             ),
         )
 
+    def save_manual_activity_log(self, conversation_event_id: int, extracted: dict[str, Any], confidence: float) -> None:
+        self._insert_simple(
+            """
+            INSERT INTO manual_activity_logs (
+                conversation_event_id, logged_at, activity_type, description, confidence, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                conversation_event_id,
+                extracted["logged_at"],
+                extracted["activity_type"],
+                extracted["description"],
+                confidence,
+                utc_now(),
+            ),
+        )
+
     def save_weight_log(self, conversation_event_id: int, extracted: dict[str, Any], confidence: float) -> int:
         with self.connect() as conn:
             cursor = conn.execute(
@@ -793,6 +821,17 @@ class Storage:
         return self._query_many(
             """
             SELECT * FROM food_logs
+            WHERE logged_at LIKE ?
+            ORDER BY logged_at ASC
+            """,
+            (f"{prefix}%",),
+        )
+
+    def list_manual_activity_logs_for_date(self, target_date: date) -> list[dict[str, Any]]:
+        prefix = target_date.isoformat()
+        return self._query_many(
+            """
+            SELECT * FROM manual_activity_logs
             WHERE logged_at LIKE ?
             ORDER BY logged_at ASC
             """,

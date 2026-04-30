@@ -88,7 +88,7 @@ class MessageIngestRequest(BaseModel):
 
 
 class ExtractedRecord(BaseModel):
-    record_type: Literal["food", "hunger", "weight"]
+    record_type: Literal["food", "hunger", "weight", "activity"]
     summary: str
     confidence: float
     payload: dict[str, Any]

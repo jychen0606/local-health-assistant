@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, time
 from typing import Literal
 
 from local_health_assistant.models import ExtractedRecord
@@ -17,6 +17,21 @@ PARTIAL_ADVICE_KEYWORDS = ("吃了一点", "只吃了几口", "小份吃了", "�
 NOT_FOLLOWED_ADVICE_KEYWORDS = ("还是吃了", "没忍住", "破功了", "吃多了", "失控了", "还是点了")
 
 WEIGHT_PATTERN = re.compile(r"(?P<value>\d{2,3}(?:\.\d+)?)\s*(?P<unit>kg|KG|公斤|千克|斤)")
+DATE_HINT_PATTERN = re.compile(r"(?P<month>\d{1,2})(?P<day>\d{2})")
+
+ACTIVITY_KEYWORDS = {
+    "tennis": "tennis",
+    "网球": "tennis",
+    "boxing": "boxing",
+    "拳击": "boxing",
+    "running": "running",
+    "跑步": "running",
+    "walk": "walking",
+    "walking": "walking",
+    "散步": "walking",
+    "力量": "strength_training",
+    "strength": "strength_training",
+}
 
 
 @dataclass(frozen=True)
@@ -79,6 +94,22 @@ def parse_message(text: str, occurred_at: datetime) -> ParseResult:
             )
         )
 
+    activity_type = infer_activity_type(normalized)
+    if activity_type:
+        logged_at = infer_activity_logged_at(normalized, occurred_at)
+        extracted.append(
+            ExtractedRecord(
+                record_type="activity",
+                summary=f"Activity log {activity_type}",
+                confidence=0.86,
+                payload={
+                    "logged_at": logged_at.isoformat(),
+                    "activity_type": activity_type,
+                    "description": normalized,
+                },
+            )
+        )
+
     return ParseResult(
         extracted=extracted,
         is_advice_request=any(keyword in normalized for keyword in ADVICE_KEYWORDS),
@@ -99,6 +130,27 @@ def infer_meal_slot(text: str) -> str:
     if "加餐" in text:
         return "snack"
     return "unspecified"
+
+
+def infer_activity_type(text: str) -> str | None:
+    lowered = text.lower()
+    for keyword, activity_type in ACTIVITY_KEYWORDS.items():
+        if keyword in lowered or keyword in text:
+            return activity_type
+    return None
+
+
+def infer_activity_logged_at(text: str, occurred_at: datetime) -> datetime:
+    match = DATE_HINT_PATTERN.search(text)
+    if not match:
+        return occurred_at
+    month = int(match.group("month"))
+    day = int(match.group("day"))
+    return datetime.combine(
+        occurred_at.date().replace(month=month, day=day),
+        time(12, 0),
+        tzinfo=occurred_at.tzinfo,
+    )
 
 
 def infer_advice_outcome_status(text: str) -> Literal["followed", "partially_followed", "not_followed"] | None:
