@@ -110,6 +110,25 @@ class ReviewGenerateRequest(BaseModel):
     target_date: date | None = None
 
 
+class RoutineStartOfDayRequest(BaseModel):
+    target_date: date | None = None
+    trigger_type: Literal["manual", "scheduled", "user"] = "manual"
+
+
+class RoutineStartOfDayResponse(BaseModel):
+    date: date
+    previous_date: date
+    daily_strategy_id: int
+    routine_event_id: int
+    weight_source: Literal["measured", "assumed", "missing"]
+    weight_kg: float | None = None
+    morning_summary: str
+    activity_context: str
+    recovery_context: str
+    meal_strategy: str
+    missing_info: list[str] = Field(default_factory=list)
+
+
 class ReviewResponse(BaseModel):
     date: date
     review_text: str

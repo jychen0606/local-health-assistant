@@ -217,6 +217,36 @@ SCHEMA_STATEMENTS = [
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS daily_strategy (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT NOT NULL UNIQUE,
+        weight_source TEXT NOT NULL,
+        weight_kg REAL,
+        morning_summary TEXT NOT NULL,
+        activity_context TEXT NOT NULL,
+        recovery_context TEXT NOT NULL,
+        meal_strategy TEXT NOT NULL,
+        risk_constraints_json TEXT NOT NULL,
+        missing_info_json TEXT NOT NULL,
+        strategy_payload_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS routine_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT NOT NULL,
+        node_type TEXT NOT NULL,
+        trigger_type TEXT NOT NULL,
+        status TEXT NOT NULL,
+        input_summary TEXT NOT NULL,
+        output_summary TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS hypothesis_scores (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         date TEXT NOT NULL,
@@ -881,6 +911,96 @@ class Storage:
                 """
             ).fetchone()
         return dict(row) if row else None
+
+    def latest_weight_for_date(self, target_date: date) -> dict[str, Any] | None:
+        prefix = target_date.isoformat()
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM weight_logs
+                WHERE logged_at LIKE ?
+                ORDER BY logged_at DESC
+                LIMIT 1
+                """,
+                (f"{prefix}%",),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def save_daily_strategy(self, target_date: date, payload: dict[str, Any]) -> int:
+        now = utc_now()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO daily_strategy (
+                    date, weight_source, weight_kg, morning_summary, activity_context,
+                    recovery_context, meal_strategy, risk_constraints_json,
+                    missing_info_json, strategy_payload_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(date) DO UPDATE SET
+                    weight_source = excluded.weight_source,
+                    weight_kg = excluded.weight_kg,
+                    morning_summary = excluded.morning_summary,
+                    activity_context = excluded.activity_context,
+                    recovery_context = excluded.recovery_context,
+                    meal_strategy = excluded.meal_strategy,
+                    risk_constraints_json = excluded.risk_constraints_json,
+                    missing_info_json = excluded.missing_info_json,
+                    strategy_payload_json = excluded.strategy_payload_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    target_date.isoformat(),
+                    payload["weight_source"],
+                    payload.get("weight_kg"),
+                    payload["morning_summary"],
+                    payload["activity_context"],
+                    payload["recovery_context"],
+                    payload["meal_strategy"],
+                    json.dumps(payload.get("risk_constraints") or [], ensure_ascii=False),
+                    json.dumps(payload.get("missing_info") or [], ensure_ascii=False),
+                    json.dumps(payload, ensure_ascii=False),
+                    now,
+                    now,
+                ),
+            )
+            row = conn.execute(
+                "SELECT id FROM daily_strategy WHERE date = ?",
+                (target_date.isoformat(),),
+            ).fetchone()
+            conn.commit()
+        return int(row["id"])
+
+    def create_routine_event(
+        self,
+        target_date: date,
+        node_type: str,
+        trigger_type: str,
+        status: str,
+        input_summary: str,
+        output_summary: str,
+        payload: dict[str, Any],
+    ) -> int:
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO routine_events (
+                    date, node_type, trigger_type, status, input_summary,
+                    output_summary, payload_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    target_date.isoformat(),
+                    node_type,
+                    trigger_type,
+                    status,
+                    input_summary,
+                    output_summary,
+                    json.dumps(payload, ensure_ascii=False),
+                    utc_now(),
+                ),
+            )
+            conn.commit()
+            return int(cursor.lastrowid)
 
     def list_recent_weight_logs(
         self,

@@ -26,6 +26,7 @@ from local_health_assistant.models import (
     OuraAuthStartResponse,
     OuraCallbackResponse,
     ReviewResponse,
+    RoutineStartOfDayResponse,
     WeightAnomalyReviewResponse,
 )
 from local_health_assistant.oura import (
@@ -194,6 +195,134 @@ class HealthService:
 
     def get_review(self, target_date: date) -> ReviewResponse | None:
         return self.storage.get_review(target_date)
+
+    def run_start_of_day(
+        self,
+        target_date: date | None = None,
+        trigger_type: str = "manual",
+    ) -> RoutineStartOfDayResponse:
+        routine_date = target_date or date.today()
+        previous_date = routine_date - timedelta(days=1)
+        metrics = self.storage.get_oura_daily_metrics(previous_date) or {}
+        foods = self.storage.list_food_logs_for_date(previous_date)
+        hunger = self.storage.list_hunger_logs_for_date(previous_date)
+        activities = self.storage.list_manual_activity_logs_for_date(previous_date)
+        measured_weight = self.storage.latest_weight_for_date(routine_date)
+        latest_weight = measured_weight or self.storage.latest_weight()
+        baseline_keys = sorted(
+            {
+                str(item.get("marker_key") or "")
+                for item in self.storage.list_health_markers()
+                if item.get("marker_key")
+            }
+        )
+
+        if measured_weight and measured_weight.get("weight_kg") is not None:
+            weight_source = "measured"
+            weight_kg = float(measured_weight["weight_kg"])
+        elif latest_weight and latest_weight.get("weight_kg") is not None:
+            weight_source = "assumed"
+            weight_kg = float(latest_weight["weight_kg"])
+        else:
+            weight_source = "missing"
+            weight_kg = None
+
+        active_calories = metrics.get("active_calories") or 0
+        steps = metrics.get("steps") or 0
+        readiness = metrics.get("readiness_score")
+        sleep_score = metrics.get("sleep_score")
+        activity_band = self._activity_band(active_calories=active_calories, steps=steps)
+        activity_summary = self._activity_record_summary(activities)
+
+        if activities and activity_band == "elevated":
+            activity_context = (
+                f"昨天有手动运动记录：{activity_summary}；Oura 显示高活动量"
+                f"（活动消耗 {active_calories}kcal，步数 {steps}），按训练日处理。"
+            )
+        elif activity_band == "elevated":
+            activity_context = (
+                f"昨天 Oura 显示高活动量（活动消耗 {active_calories}kcal，步数 {steps}），"
+                "但没有明确运动类型，按训练样高活动日处理。"
+            )
+        elif activity_band == "daily_baseline":
+            activity_context = (
+                f"昨天接近日常基础活动量（活动消耗 {active_calories}kcal，步数 {steps}），"
+                "按正常走路日处理。"
+            )
+        elif metrics:
+            activity_context = "昨天活动量不是主要解释变量，今日策略优先看餐食节奏和恢复状态。"
+        else:
+            activity_context = "昨天缺 Oura 活动数据，今日策略暂不使用活动强度推断。"
+
+        if readiness is None and sleep_score is None:
+            recovery_context = "昨天缺睡眠/恢复数据，恢复边界不确定。"
+        elif readiness is not None and readiness < 75:
+            recovery_context = f"恢复分 {readiness} 偏保守，今天不适合叠加硬控饮食、脱水和高强度训练。"
+        else:
+            recovery_context = f"恢复分 {_display_value(readiness)}，睡眠分 {_display_value(sleep_score)}；恢复不是主要限制项。"
+
+        missing_info: list[str] = []
+        if weight_source == "assumed":
+            missing_info.append("今天未记录晨起体重，暂按最近体重不变处理。")
+        elif weight_source == "missing":
+            missing_info.append("缺少可用体重记录。")
+        if not foods:
+            missing_info.append("昨天缺餐食记录，今天午餐/晚餐反馈需要补足饮食细节。")
+        if not hunger:
+            missing_info.append("昨天缺饥饿/想吃记录，今天需要记录明显想吃发生的时间和原因。")
+        if activities and activity_band == "elevated":
+            meal_strategy = "今天按训练日后恢复处理：正常吃正餐，保留主食和蛋白，避免把高活动日转化为额外进食变量。"
+        elif activity_band == "daily_baseline":
+            meal_strategy = "今天按正常餐次吃；只有出现明确饥饿或正式训练，再考虑清楚的补充。"
+        else:
+            meal_strategy = "今天先稳定餐次结构：每餐有明确蛋白、正常主食和蔬菜，避免临时加码节食。"
+
+        weight_text = "体重缺失" if weight_kg is None else f"体重 {weight_kg:.1f}kg（{weight_source}）"
+        morning_summary = (
+            f"Start of day {routine_date.isoformat()}：基于昨天 {previous_date.isoformat()} 数据；"
+            f"{weight_text}。"
+        )
+        payload = {
+            "date": routine_date.isoformat(),
+            "previous_date": previous_date.isoformat(),
+            "weight_source": weight_source,
+            "weight_kg": weight_kg,
+            "morning_summary": morning_summary,
+            "activity_context": activity_context,
+            "recovery_context": recovery_context,
+            "meal_strategy": meal_strategy,
+            "risk_constraints": baseline_keys,
+            "missing_info": missing_info,
+            "evidence": {
+                "oura_metrics": metrics,
+                "food_log_count": len(foods),
+                "hunger_log_count": len(hunger),
+                "manual_activities": activities,
+            },
+        }
+        strategy_id = self.storage.save_daily_strategy(routine_date, payload)
+        event_id = self.storage.create_routine_event(
+            target_date=routine_date,
+            node_type="start_of_day",
+            trigger_type=trigger_type,
+            status="completed",
+            input_summary=f"previous_date={previous_date.isoformat()}, weight_source={weight_source}",
+            output_summary=meal_strategy,
+            payload=payload | {"daily_strategy_id": strategy_id},
+        )
+        return RoutineStartOfDayResponse(
+            date=routine_date,
+            previous_date=previous_date,
+            daily_strategy_id=strategy_id,
+            routine_event_id=event_id,
+            weight_source=weight_source,
+            weight_kg=weight_kg,
+            morning_summary=morning_summary,
+            activity_context=activity_context,
+            recovery_context=recovery_context,
+            meal_strategy=meal_strategy,
+            missing_info=missing_info,
+        )
 
     def import_baseline_report(self, path: str) -> BaselineResponse:
         return import_baseline_json(self.storage, path)

@@ -16,6 +16,7 @@ from local_health_assistant.models import (
     OnboardingUpdateRequest,
     OuraSyncRequest,
     ReviewGenerateRequest,
+    RoutineStartOfDayRequest,
     StatusResponse,
 )
 from local_health_assistant.oura import OuraClient, OuraOAuthClient
@@ -830,6 +831,12 @@ def get_review_markdown(target_date: date) -> PlainTextResponse:
     if not review:
         raise HTTPException(status_code=404, detail="Review not found")
     return PlainTextResponse(review.review_text, media_type="text/markdown; charset=utf-8")
+
+
+@app.post("/health/routine/start-of-day")
+def routine_start_of_day(request: RoutineStartOfDayRequest) -> dict[str, object]:
+    result = service.run_start_of_day(request.target_date, request.trigger_type)
+    return result.model_dump(mode="json")
 
 
 @app.get("/health/weights/anomaly/{target_date}")
